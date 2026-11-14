@@ -16,7 +16,16 @@ The apps run independently. NovaMart stores demo orders in a local JSON file; No
 
 ## Run the demo locally
 
-Use **Python 3.12**, **Node.js 20**, npm, and Make. From the repository root, install each component:
+Use **Python 3.12**, **Node.js 20**, and npm. From the repository root, install and start all six servers in one terminal:
+
+```bash
+./dev.sh setup
+./dev.sh
+```
+
+The launcher starts NovaMart (ports 3100 and 8100), NovaConnect (3200 and 8200), and the uptime API and dashboard (8300 and 3300). It waits for the demo apps before starting the uptime worker, writes logs under `.dev/logs/`, and stops all servers with Ctrl+C. Run `./dev.sh logs` in another terminal to follow the logs. If those ports are occupied, use `DEV_PORT_OFFSET=1000 ./dev.sh` to shift all six ports. The CI repair agent is separate and is not started by this script.
+
+To run components separately, use their Make targets. First install them:
 
 ```bash
 cd shopping && make install && cd ..
@@ -24,7 +33,7 @@ cd message-platform && make install && cd ..
 cd admin-dashboard && make install && cd ..
 ```
 
-Start these commands in separate terminals, each from the repository root:
+Then start these commands in separate terminals, each from the repository root:
 
 ```bash
 cd shopping && make dev
@@ -59,4 +68,4 @@ cd message-platform && make test && make typecheck
 cd admin-dashboard && make test && make typecheck
 ```
 
-For the agent tests, run `.venv/bin/python -m pytest agents/tests -q` from the root. The app workflows are in [`.github/workflows/`](.github/workflows/) and run when their app files change. This README-only change does not trigger them.
+For the agent tests, run `.venv/bin/python -m pytest agents/tests -q` from the root. The app workflows are in [`.github/workflows/`](.github/workflows/) and run when their app files change.
