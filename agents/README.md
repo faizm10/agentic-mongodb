@@ -283,3 +283,22 @@ See the docstring at the top of `orchestrator.py`. Summary:
 - **Hamza** – `monitor.poll_failed_runs() -> [FailedRun]`, `github.find_pr(repo, branch)`, `github.open_draft_pr(repo, branch, base_sha, title, body, patch)` (idempotent on branch; commits `patch["files"]`).
 - **Faiz** – `repairer.repair(failed_run, similar) -> {tests_passed, test_output, diff, files, changed_files, summary, root_cause}`.
 - Wire the real classes in `_build_real()` in `orchestrator.py`.
+
+### Live incidents: system check every 30 s (Mo)
+
+`agents/live_incidents.py`. The worker (`python -m agents.orchestrator worker`) checks Taha's apps
+every `POLL_SECONDS` (30), alongside CI. Use `python -m agents.orchestrator live [--once]` for live checks only.
+
+| App | Availability | Functional probe (side-effect free) | Default URL |
+|---|---|---|---|
+| shopping (NovaMart) | `GET /api/health` | `GET /api/health/checkout` | `http://localhost:8100` |
+| messaging (NovaConnect) | `GET /health` | `GET /api/monitor/probe` | `http://localhost:8200` |
+
+- **Fails:** opens the service's incident in the `live_incidents` collection, or updates it. There is at most one unresolved incident per service.
+- **Evidence:** the exact failed step (URL, HTTP status, failed checks), the deployed commit (`HEAD` of `OPSRELAY_REPO_PATH`), the last 3 commits' changes under the app, the app's log lines, the latest CI status, and similar incidents from Atlas Vector Search. This is stored on the incident as `evidence`.
+- **Investigation:** hands Faiz's `LiveIncident` to `diagnose_incident` once per incident, retrying up to 3 times on errors. The result is stored as `investigation`.
+- **Passes again:** the incident is resolved, with the fresh probe id recorded as proof of recovery.
+- Every step is logged to `workflow_steps`.
+
+Settings: `OPSRELAY_LIVE_SERVICES` (default `shopping,messaging`; `none` turns it off),
+`OPSRELAY_SHOPPING_URL`, `OPSRELAY_MESSAGING_URL`, `OPSRELAY_<APP>_LOG_FILE`, `OPSRELAY_<APP>_DEPLOYED_SHA`.

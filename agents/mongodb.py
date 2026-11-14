@@ -34,6 +34,7 @@ except ImportError:  # pragma: no cover
 INCIDENTS = "incidents"
 WORKFLOW_STEPS = "workflow_steps"
 MEMORIES = "memories"
+LIVE_INCIDENTS = "live_incidents"
 
 VECTOR_INDEX_NAME = "memory_vector_index"
 EMBEDDING_DIMS = int(os.getenv("EMBEDDING_DIMS", "1024"))
@@ -111,6 +112,10 @@ def memories(db: Database | None = None) -> Collection:
     return get_db(db)[MEMORIES]
 
 
+def live_incidents(db: Database | None = None) -> Collection:
+    return get_db(db)[LIVE_INCIDENTS]
+
+
 # --------------------------------------------------------------------------- #
 # Schema validation                                                           #
 # --------------------------------------------------------------------------- #
@@ -173,6 +178,21 @@ MEMORY_SCHEMA = {
 }
 
 
+LIVE_INCIDENT_SCHEMA = {
+    "$jsonSchema": {
+        "bsonType": "object",
+        "required": ["_id", "service", "app", "status", "opened_at", "failure_count"],
+        "properties": {
+            "_id": {"bsonType": "string", "pattern": "^live:"},
+            "service": {"bsonType": "string"},
+            "app": {"bsonType": "string"},
+            "status": {"enum": ["open", "investigating", "diagnosed", "resolved"]},
+            "failure_count": {"bsonType": ["int", "long"], "minimum": 1},
+        },
+    }
+}
+
+
 def _ensure_collection(db: Database, name: str, schema: dict) -> None:
     try:
         db.create_collection(name, validator=schema, validationLevel="moderate")
@@ -205,6 +225,12 @@ def ensure_setup(db: Database | None = None, vector_index: bool = True) -> None:
     db[MEMORIES].create_index([("app", ASCENDING), ("created_at", DESCENDING)], name="by_app")
     # Memories with expires_at are removed automatically by Atlas.
     db[MEMORIES].create_index("expires_at", expireAfterSeconds=0, name="ttl")
+
+    # Live-check incidents: at most one unresolved incident per service.
+    _ensure_collection(db, LIVE_INCIDENTS, LIVE_INCIDENT_SCHEMA)
+    live = db[LIVE_INCIDENTS]
+    live.create_index("active_service", unique=True, sparse=True, name="one_open_per_service")
+    live.create_index([("service", ASCENDING), ("opened_at", DESCENDING)], name="by_service")
 
     if vector_index:
         ensure_vector_index(db)
@@ -268,5 +294,5 @@ def watch_incidents(db: Database | None = None):
 if __name__ == "__main__":
     ensure_setup()
     print(f"[mongodb] setup complete on db '{get_db().name}'")
-    for name in (INCIDENTS, WORKFLOW_STEPS, MEMORIES):
+    for name in (INCIDENTS, WORKFLOW_STEPS, MEMORIES, LIVE_INCIDENTS):
         print(f"  {name}: {get_db()[name].count_documents({})} docs")
