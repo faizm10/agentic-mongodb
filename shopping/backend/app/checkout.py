@@ -10,9 +10,9 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Mapping, Sequence
 
-from . import inventory, pricing
+from . import demo_outage, inventory, pricing
 from .catalog import Catalog, Product
-from .errors import EmptyCartError, InvalidPromoCodeError, NovaMartError
+from .errors import EmptyCartError, InvalidPromoCodeError, NovaMartError, PaymentUnavailableError
 from .store import DemoStore
 
 DELIVERY_WINDOWS_DAYS = {"standard": (4, 7), "express": (1, 2)}
@@ -55,6 +55,8 @@ class CheckoutService:
 
     # ---------------------------------------------------------- availability
     def availability(self, sold: Mapping[str, int] | None = None) -> dict[str, int]:
+        if demo_outage.mode(self.store.data_dir) == "inventory":
+            return {p.id: 0 for p in self.catalog.products}
         sold = self.store.sold_counts() if sold is None else sold
         return {p.id: p.stock - int(sold.get(p.id, 0)) for p in self.catalog.products}
 
@@ -120,6 +122,9 @@ class CheckoutService:
             availability = self.availability(data["sold"])
             quote = self.build_quote(items, promo_code, shipping_method, availability=availability)
             inventory.ensure_available(quote.requested, availability)
+
+            if demo_outage.mode(self.store.data_dir) == "payment":
+                raise PaymentUnavailableError("Payment processing is temporarily unavailable.")
 
             now = self.clock()
             order = self._build_order(quote, now, customer, shipping_address)

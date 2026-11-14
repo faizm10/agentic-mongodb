@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__
+from . import __version__, demo_outages
 from .config import MonitorSettings, load_settings
 from .handoff import build_handoff
 from .models import Incident, IncidentEvent, IncidentLink, ServiceConfig, ServiceState, Status, WorkerState
@@ -125,6 +125,10 @@ class LinkIn(BaseModel):
 
 class ServicePatch(BaseModel):
     enabled: bool
+
+
+class DemoOutageIn(BaseModel):
+    scenario: Literal["payment", "images", "inventory", "send", "receive", "both"]
 
 
 # -------------------------------------------------------------------- the app
@@ -344,6 +348,34 @@ def create_app(
         return ok(build_handoff(incident, service, clock()))
 
     # ---------------------------------------------------------- mutations
+    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_admin)])
+    def start_demo_outage(service_id: str, body: DemoOutageIn):
+        if service_id not in demo_outages.SCENARIOS:
+            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
+        service_or_404(service_id)
+        try:
+            demo_outages.activate(service_id, body.scenario)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except OSError as exc:
+            logger.error("Cannot start demo outage for %s: %s", service_id, exc)
+            raise HTTPException(503, "The local demo app is unavailable in this checkout.") from exc
+        storage.request_check(clock())
+        return ok({"service_id": service_id, "requested": True})
+
+    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_admin)])
+    def stop_demo_outage(service_id: str):
+        if service_id not in demo_outages.SCENARIOS:
+            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
+        service_or_404(service_id)
+        try:
+            demo_outages.clear(service_id)
+        except OSError as exc:
+            logger.error("Cannot clear demo outage for %s: %s", service_id, exc)
+            raise HTTPException(503, "The local demo outage could not be cleared.") from exc
+        storage.request_check(clock())
+        return ok({"service_id": service_id, "requested": True})
+
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig], dependencies=[Depends(require_admin)])
     def patch_service(service_id: str, body: ServicePatch):
         service_or_404(service_id)

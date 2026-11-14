@@ -129,6 +129,7 @@ export type Probe = {
   error: string | null;
   details: {
     status?: string;
+    demo_outage?: boolean;
     summary?: string;
     failed_checks?: string[];
     failures?: { check: string; component?: string; reason: string; source?: string | null; expected?: unknown; actual?: unknown }[];
@@ -171,6 +172,11 @@ export type ServiceConfig = {
 };
 
 export type ServiceDetail = { service: ServiceConfig; current: Current; uptime: Record<Window, UptimeStats>; incidents: Incident[]; incident_ids: string[] };
+
+export function isDemoIncident(incident: Incident): boolean {
+  const latest = incident.evidence.latest_failure as { probes?: { functional?: { details?: { demo_outage?: boolean } } } } | undefined;
+  return latest?.probes?.functional?.details?.demo_outage === true;
+}
 export type LatencyPoint = { start: string; availability_avg_ms: number | null; availability_max_ms: number | null; functional_avg_ms: number | null; functional_max_ms: number | null; samples: number };
 
 type Envelope<T> = { data: T; meta: Meta };

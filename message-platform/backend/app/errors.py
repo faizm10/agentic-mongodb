@@ -72,3 +72,9 @@ class InvalidStatusTransitionError(MessagingError):
     status_code = 409
     code = "INVALID_STATUS_TRANSITION"
     component = "status"
+
+
+class MessageServiceUnavailableError(MessagingError):
+    status_code = 503
+    code = "MESSAGE_SERVICE_UNAVAILABLE"
+    component = "messages"

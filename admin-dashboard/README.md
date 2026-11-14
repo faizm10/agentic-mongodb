@@ -40,8 +40,9 @@ These endpoints were confirmed from each app's code (`shopping/backend/app/main.
 9. [API reference](#api-reference)
 10. [Integration with the OpsRelay agents (Developers 1–3)](#integration-with-the-opsrelay-agents)
 11. [Tests](#tests)
-12. [Demo: degraded, down and recovery](#demo-degraded-down-and-recovery)
-13. [Known limitations](#known-limitations)
+12. [Demo outage controls](#demo-outage-controls)
+13. [Demo: degraded, down and recovery](#demo-degraded-down-and-recovery)
+14. [Known limitations](#known-limitations)
 
 ---
 
@@ -61,7 +62,7 @@ admin-dashboard/
 │   │   ├── api.py                 FastAPI dashboard API (typed envelopes, admin-token mutations)
 │   │   ├── storage/               MongoDB (Atlas) + local development (SQLite) backends
 │   │   └── __main__.py            CLI: serve | worker | api | check | status
-│   └── tests/                     81 deterministic tests (fake clock, mock transport, both backends)
+│   └── tests/                     82 deterministic tests (fake clock, mock transport, both backends)
 └── web/                           Next.js 15 + TypeScript + Tailwind status dashboard (port 3300)
     └── src/app/                   /  ·  /services/[id]  ·  /incidents/[id]
 ```
@@ -73,7 +74,7 @@ admin-dashboard/
  Browser ── :3300 Next.js ── /api proxy (server-side) ── :8300 uptime API ── storage
 ```
 
-The browser only talks to Next.js. `/api/*` is proxied server-side, so no database URI or admin token ever reaches the client.
+The browser only talks to Next.js. `/api/*` is proxied server-side, so the database URI never reaches the client. For demo controls, the operator enters the admin token in the browser; it is sent in an authorization header and is not saved by the dashboard.
 
 ---
 
@@ -136,7 +137,8 @@ See `.env.example`, which contains non-secret examples only. `admin-dashboard/.e
 | `OPSRELAY_LEASE_TTL` | `2 × interval + 10` | How long a crashed worker blocks a successor |
 | `OPSRELAY_<ID>_FRONTEND_URL` / `_BACKEND_URL` | `services.toml` | Per-service URL overrides (`NOVAMART`, `NOVACONNECT`) |
 | `OPSRELAY_API_HOST` / `OPSRELAY_API_PORT` | `127.0.0.1` / `8300` | API bind address |
-| `OPSRELAY_ADMIN_TOKEN` | *(empty: mutations disabled)* | Bearer token for mutation endpoints |
+| `OPSRELAY_ADMIN_TOKEN` | *(empty: mutations disabled)* | Bearer token for mutation endpoints and demo outage controls |
+| `OPSRELAY_DEMO_REPO_ROOT` | Repository root inferred from this code | Override only if the uptime API and demo apps use a different checkout location |
 | `OPSRELAY_UPTIME_API_URL` | `http://127.0.0.1:8300` | Dashboard's server-side proxy target |
 
 ---
@@ -237,10 +239,12 @@ Base URL `http://localhost:8300`. Every success is `{"data": …, "meta": {"gene
 | GET | `/api/v1/incidents/{id}/evidence` | **AI hand-off** (`opsrelay.uptime_incident.v1`) |
 | PATCH 🔒 | `/api/v1/services/{id}` | `{"enabled": bool}`: pause or resume monitoring of a service |
 | POST 🔒 | `/api/v1/monitor/check-now` | Run (`serve`) or request (`worker`) an immediate cycle |
+| POST 🔒 | `/api/v1/demo/outages/{novamart\|novaconnect}` | Start one of the supported local demo outages (`{"scenario": "..."}`) |
+| DELETE 🔒 | `/api/v1/demo/outages/{novamart\|novaconnect}` | Restore the selected app |
 | POST 🔒 | `/api/v1/incidents/{id}/acknowledge` | `{"by", "note"}` |
 | POST 🔒 | `/api/v1/incidents/{id}/links` | `{"kind": "github_actions_run"\|"repair_pr"\|"other", "url": "https://…", "label"}`: idempotent per URL |
 
-🔒 requires `Authorization: Bearer $OPSRELAY_ADMIN_TOKEN`. If no token is configured on the server, mutations return 403. The dashboard never sends the token: it is read-only.
+🔒 requires `Authorization: Bearer $OPSRELAY_ADMIN_TOKEN`. If no token is configured on the server, mutations return 403. The dashboard sends the token only after the operator enters it in the demo controls.
 
 ```bash
 curl -s localhost:8300/api/v1/summary | jq '.data.overall'
@@ -281,7 +285,7 @@ There is no automatic call from the monitor into `agents.diagnose_incident`. Tha
 ## Tests
 
 ```bash
-cd admin-dashboard/backend && .venv/bin/python -m pytest      # 81 tests, ~7 s
+cd admin-dashboard/backend && .venv/bin/python -m pytest      # 82 tests, ~7 s
 ```
 
 Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). The tests use a fake clock and fake sleep, so 30-second schedules run instantly, plus `httpx.MockTransport` fake apps. They also use real sockets for the unreachable and timeout cases.
@@ -295,6 +299,17 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 | `test_api.py` | Envelope; unknown before any check; **independent statuses**; uptime computed from stored checks; detail, checks and latency endpoints; hand-off evidence and routes; stale → unknown; admin auth (403/401/200, token never echoed); idempotent links; **the full section-9 demo scenario** |
 
 ---
+
+## Demo outage controls
+
+Set a non-empty `OPSRELAY_ADMIN_TOKEN` in `admin-dashboard/.env`, then restart the uptime API. Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout**. On the dashboard overview, enter that token and choose one of six controls:
+
+| App | Controls | Effect |
+| --- | --- | --- |
+| NovaMart | Fail payment, Fail image loading, Empty inventory | Checkout returns 503 before saving an order; storefront image requests fail; or products and checkout show zero stock. |
+| NovaConnect | Stop sending, Stop receiving, Stop both | Sending returns 503; history and recipient push delivery stop; or both paths stop. |
+
+One scenario is active per app. Selecting another replaces it. Use **Restore NovaMart** or **Restore NovaConnect** to remove it; no source files or test fixtures are edited. The worker is asked to run a new check after every change. The dashboard shows service status without naming the active scenario; diagnostic evidence remains available through the uptime API for incident processing. These controls are for a local demo where all processes share the checkout and the apps use their default data paths. NovaMart payments remain simulated; no real payment is attempted.
 
 ## Demo: degraded, down and recovery
 
@@ -325,5 +340,5 @@ To see results without waiting for the next slot, use `POST /api/v1/monitor/chec
 - **Single active worker by design** (lease-based). Monitoring from several regions would need a per-region lease and per-region checks.
 - **Uptime is computed on read** from raw samples. That's fine at 2 services × 30 s (~86k samples per 30 days per service). Far larger fleets would want pre-aggregated rollups.
 - **The agent hand-off is pull-based** (an API, or Mongo documents); the monitor does not push into the AI pipeline.
-- **The dashboard is read-only** and has no login. Mutations go through the admin API with a bearer token. Put the dashboard behind your own auth if it's exposed beyond localhost.
+- **The dashboard has no login.** Demo controls require the admin token entered by the operator. Other mutations go through the admin API with the same bearer token. Put the dashboard behind your own auth if it's exposed beyond localhost.
 - **Probes are run from one host.** A network partition between the monitor and an app looks like *down* (route `service_health`), which is why such incidents are never sent to code repair automatically.

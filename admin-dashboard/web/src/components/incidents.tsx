@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { ArrowUpRight, CheckCircle2, GitPullRequest, Siren } from "lucide-react";
-import type { Incident } from "@/lib/api";
+import { type Incident, isDemoIncident } from "@/lib/api";
 import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
 import { StatusIcon } from "./ui";
 
@@ -20,6 +20,7 @@ export function IncidentRow({ incident }: { incident: Incident }) {
   const open = incident.state === "open";
   const live = open ? (now - new Date(incident.started_at).getTime()) / 1000 : incident.duration_seconds;
   const pr = incident.links.find((l) => l.kind === "repair_pr");
+  const demo = isDemoIncident(incident);
   return (
     <li className="relative pl-7">
       <span className="absolute left-0 top-1 flex h-4 w-4 items-center justify-center">
@@ -31,12 +32,12 @@ export function IncidentRow({ incident }: { incident: Incident }) {
           <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${open ? "bg-crit/15 text-crit" : "bg-ok/10 text-ok"}`}>
             {open ? "Ongoing" : "Resolved"}
           </span>
-          <RouteBadge route={incident.investigation_route} />
+          {!demo && <RouteBadge route={incident.investigation_route} />}
           <ArrowUpRight className="ml-auto h-4 w-4 text-faint opacity-0 transition group-hover:opacity-100" />
         </div>
-        <p className="mt-1 line-clamp-2 text-sm text-muted">{incident.summary}</p>
+        <p className="mt-1 line-clamp-2 text-sm text-muted">{demo ? `Service status: ${incident.state === "open" ? incident.severity : "recovered"}.` : incident.summary}</p>
         <p className="tabular mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-faint">
-          <span>{FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}</span>
+          {!demo && <span>{FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}</span>}
           <span>Started {clock(incident.started_at, true)}</span>
           {incident.resolved_at && <span>Recovered {clock(incident.resolved_at, true)}</span>}
           <span className={open ? "font-semibold text-ink" : ""}>{open ? `Ongoing for ${duration(live)}` : `Lasted ${duration(live)}`}</span>

@@ -10,10 +10,10 @@ import { UptimeFigure, uptimeBasis } from "@/components/uptime";
 import { type Bar, type Check, type LatencyPoint, type Probe, type ServiceDetail, type UptimeStats, type Window, usePoll } from "@/lib/api";
 import { FAILURE_LABELS, STATUS_META, ago, clock, duration, ms, useNow } from "@/lib/format";
 
-function ProbeCell({ probe }: { probe: Probe | null }) {
+function ProbeCell({ probe, redact = false }: { probe: Probe | null; redact?: boolean }) {
   if (!probe) return <span className="text-faint">—</span>;
   return (
-    <span className="inline-flex items-center gap-1.5" title={probe.error ?? probe.url}>
+    <span className="inline-flex items-center gap-1.5" title={redact ? undefined : probe.error ?? probe.url}>
       {probe.ok ? <CheckCircle2 className="h-3.5 w-3.5 text-ok" /> : <XCircle className="h-3.5 w-3.5 text-crit" />}
       <span className="text-ink">{probe.http_status ?? probe.error_kind?.replace("_", " ")}</span>
       <span className="text-faint">{ms(probe.latency_ms)}</span>
@@ -24,6 +24,7 @@ function ProbeCell({ probe }: { probe: Probe | null }) {
 function FunctionalResult({ check }: { check: Check | undefined }) {
   const f = check?.functional;
   if (!f) return <p className="text-sm text-muted">No functional probe results yet.</p>;
+  if (f.details.demo_outage) return <p className="text-sm text-muted">Service status: {check?.status}.</p>;
   const failures = f.details.failures ?? [];
   return (
     <div>
@@ -108,7 +109,7 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
                   <h1 className="text-2xl font-semibold tracking-tight">{d.service.name}</h1>
                   <StatusPill status={d.current.status} />
                 </div>
-                <p className="mt-1 text-sm text-muted">{d.current.summary}</p>
+                <p className="mt-1 text-sm text-muted">{d.service.description}</p>
                 <p className="mt-1 text-xs text-faint">
                   {d.current.since && `${STATUS_META[d.current.status].label} since ${clock(d.current.since, true)} · `}
                   last checked {ago(d.current.last_checked_at, now)} · last success {ago(d.current.last_success_at, now)}
@@ -182,11 +183,11 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
                         {!c.scheduled && <span className="ml-1.5 rounded bg-raised px-1 text-[10px] text-faint">manual</span>}
                       </td>
                       <td className="py-2.5 pr-4"><StatusPill status={c.status} size="sm" /></td>
-                      <td className="py-2.5 pr-4"><ProbeCell probe={c.frontend} /></td>
-                      <td className="py-2.5 pr-4"><ProbeCell probe={c.availability} /></td>
-                      <td className="py-2.5 pr-4"><ProbeCell probe={c.functional} /></td>
-                      <td className="max-w-[260px] truncate py-2.5 text-xs text-muted" title={c.summary}>
-                        {c.failure_type ? FAILURE_LABELS[c.failure_type] ?? c.failure_type : "All healthy"}
+                      <td className="py-2.5 pr-4"><ProbeCell probe={c.frontend} redact={c.functional?.details.demo_outage} /></td>
+                      <td className="py-2.5 pr-4"><ProbeCell probe={c.availability} redact={c.functional?.details.demo_outage} /></td>
+                      <td className="py-2.5 pr-4"><ProbeCell probe={c.functional} redact={c.functional?.details.demo_outage} /></td>
+                      <td className="max-w-[260px] truncate py-2.5 text-xs text-muted" title={c.functional?.details.demo_outage ? undefined : c.summary}>
+                        {c.functional?.details.demo_outage ? STATUS_META[c.status].label : c.failure_type ? FAILURE_LABELS[c.failure_type] ?? c.failure_type : "All healthy"}
                       </td>
                     </tr>
                   ))}

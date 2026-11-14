@@ -4,7 +4,7 @@ NovaConnect is a polished, real-time messaging app built for the **OpsRelay** AI
 
 - **Next.js 15 + TypeScript + Tailwind + Motion** client with direct messages, group chats, replies, reactions, edits, deletes, pins, search, typing indicators, read receipts, presence, light/dark themes and a responsive mobile layout.
 - **FastAPI + WebSockets + SQLite** backend with typed models, structured errors and persistent storage.
-- **66 Pytest tests** covering every business rule, with expected-vs-actual failure messages and a machine-readable OpsRelay report.
+- **70 Pytest tests** covering business rules and demo outages, with expected-vs-actual failure messages and a machine-readable OpsRelay report.
 - A **functional monitoring probe** (service id `messaging`) that runs real business logic against an isolated in-memory database.
 - **`inject_bug.py`**: three realistic, reversible, one-line defects for the OpsRelay agent to detect and repair.
 
@@ -242,7 +242,7 @@ When a user connects, every message still `sent` to them becomes `delivered`, an
 
 ```bash
 cd message-platform/backend
-.venv/bin/python -m pytest          # 66 tests, ~1s, exit code != 0 on any failure
+.venv/bin/python -m pytest          # 70 tests, exit code != 0 on any failure
 ```
 
 Tests use isolated databases (in-memory or a temp file) and a deterministic fake clock. They never touch your demo data and need no network.

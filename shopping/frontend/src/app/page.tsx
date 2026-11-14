@@ -26,6 +26,7 @@ export default async function HomePage() {
     return <BackendOffline message={(e as Error).message} />;
   }
   const hero = data.featured.find((p) => p.id === "nm-aud-001") ?? data.featured[0];
+  const imageOutage = hero?.image === "/api/demo/unavailable-image";
 
   return (
     <>
@@ -69,7 +70,7 @@ export default async function HomePage() {
 
           <div className="relative animate-fade-up [animation-delay:120ms]">
             <div className="relative aspect-[4/5] overflow-hidden rounded-[2.5rem] shadow-lift">
-              <ProductImage src={`${UNSPLASH}1519710164239-da123dc03ef4`} alt="A calm, sunlit living space" width={1100} height={1375} priority className="h-full w-full" />
+              <ProductImage src={imageOutage ? "/api/demo/unavailable-image" : `${UNSPLASH}1519710164239-da123dc03ef4`} alt="A calm, sunlit living space" width={1100} height={1375} priority className="h-full w-full" />
               <div className="absolute inset-0 bg-gradient-to-t from-ink-900/30 via-transparent" />
             </div>
             {hero && (
@@ -143,7 +144,7 @@ export default async function HomePage() {
               </Link>
             </div>
             <div className="relative min-h-80">
-              <ProductImage src={`${UNSPLASH}1593062096033-9a26b09da705`} alt="A warm, minimal desk setup" width={1200} height={900} className="absolute inset-0 h-full w-full" />
+              <ProductImage src={imageOutage ? "/api/demo/unavailable-image" : `${UNSPLASH}1593062096033-9a26b09da705`} alt="A warm, minimal desk setup" width={1200} height={900} className="absolute inset-0 h-full w-full" />
               <div className="absolute inset-0 bg-gradient-to-r from-ink-900 via-ink-900/20 to-transparent max-lg:bg-gradient-to-t" />
             </div>
           </div>
