@@ -30,6 +30,10 @@ INCIDENTS = "uptime_incidents"
 WORKER = "uptime_worker"
 AGENT_INCIDENTS = "incidents"  # owned by agents/mongodb.py; read-only here
 AGENT_STEPS = "workflow_steps"  # owned by agents/mongodb.py; read-only here
+AGENT_MEMORIES = "memories"  # owned by agents/memory.py; read-only here
+RL_EXPERIENCES = "rl_experiences"  # owned by agents/rl_policy.py; read-only here
+RL_TRAINING_RUNS = "rl_training_runs"  # owned by agents/rl_policy.py; read-only here
+MOCK_INCIDENTS = "mock_incidents"  # owned by agents/mock_incidents.py; read-only here
 
 
 def escape_credentials(uri: str) -> str:
@@ -284,6 +288,63 @@ class MongoStorage:
                 "lease_expires_at": (doc.get("lease") or {}).get("expires_at"),
                 "pr_url": (doc.get("pr") or {}).get("url"), "latest_action": step}
 
+    def get_learning_summary(self) -> dict[str, Any] | None:
+        """What the agents' reinforcement-learning fix policy has learned (read-only).
+
+        Only aggregate numbers and playbook names leave the database: never failure logs,
+        state text, embeddings or diffs.
+        """
+        db = self.db
+        if RL_EXPERIENCES not in db.list_collection_names():
+            return None
+        exp = db[RL_EXPERIENCES]
+        strategies = [
+            {"app": r["_id"]["app"], "action": r["_id"]["action"], "tries": r["tries"],
+             "successes": r["successes"], "success_rate": round(r["success_rate"], 3),
+             "real_tries": r["real_tries"]}
+            for r in exp.aggregate([
+                {"$group": {"_id": {"app": "$app", "action": "$action"}, "tries": {"$sum": 1},
+                            "successes": {"$sum": "$reward"}, "success_rate": {"$avg": "$reward"},
+                            "real_tries": {"$sum": {"$cond": [{"$eq": ["$source", "mock"]}, 0, 1]}}}},
+                {"$sort": {"_id.app": 1, "success_rate": -1, "tries": -1}},
+            ])
+        ]
+        run = db[RL_TRAINING_RUNS].find_one({}, {"_id": 0}, sort=[("at", DESCENDING)])
+        decisions = [
+            {"incident_id": str(d["_id"]), "app": d.get("app"), "source": d.get("source") or "ci",
+             "status": d.get("status"), "created_at": d.get("created_at"),
+             "action": (d.get("rl") or {}).get("action"),
+             "expected_success": (d.get("rl") or {}).get("expected_success"),
+             "hinted": bool((d.get("rl") or {}).get("hinted")),
+             "pr_url": (d.get("pr") or {}).get("url")}
+            for d in db[AGENT_INCIDENTS].find(
+                {"rl.action": {"$exists": True}},
+                {"_id": 1, "app": 1, "source": 1, "status": 1, "created_at": 1, "rl": 1, "pr.url": 1},
+            ).sort("created_at", DESCENDING).limit(6)
+        ]
+        return {
+            "totals": {
+                "experiences": exp.count_documents({}),
+                "real_experiences": exp.count_documents({"source": {"$ne": "mock"}}),
+                "mock_incidents": db[MOCK_INCIDENTS].count_documents({}),
+                "memories": db[AGENT_MEMORIES].count_documents({"active": {"$ne": False}}),
+            },
+            "strategies": strategies,
+            "training": run,
+            "decisions": decisions,
+            "vector_indexes": self._vector_indexes(),
+        }
+
+    def _vector_indexes(self) -> list[dict[str, Any]]:
+        out = []
+        for coll in (AGENT_MEMORIES, RL_EXPERIENCES):
+            try:
+                for ix in self.db[coll].list_search_indexes():
+                    out.append({"collection": coll, "name": ix.get("name"), "status": ix.get("status"),
+                                "queryable": bool(ix.get("queryable"))})
+            except Exception:  # noqa: BLE001 - not Atlas (local mongod / mongomock): nothing to show
+                pass
+        return out
 
     def get_agent_findings(self, uptime_incident_id: str) -> dict[str, Any] | None:
         """What the agent concluded about this uptime incident, for the dashboard assistant.

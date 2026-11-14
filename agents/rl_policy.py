@@ -46,6 +46,7 @@ from agents import mongodb as m
 
 RL_EXPERIENCES = "rl_experiences"
 MOCK_INCIDENTS = "mock_incidents"
+TRAINING_RUNS = "rl_training_runs"   # one summary per `train` run, read by the admin dashboard
 EXPERIENCE_INDEX = "experience_vector_index"
 NEIGHBORS = 25          # past experiences consulted per decision
 MAX_ATTEMPTS = 3        # fix attempts per incident during training
@@ -393,6 +394,7 @@ def train(db: Database | None = None, seed: int = 7, epochs: int = 2, verbose: b
     first_try: list[bool] = []
     attempts_used: list[int] = []
     fixed: dict[str, str] = {}
+    curve: list[dict] = []
     for epoch in range(1, epochs + 1):
         new_docs = []
         for i, inc in enumerate(incidents, 1):
@@ -412,8 +414,12 @@ def train(db: Database | None = None, seed: int = 7, epochs: int = 2, verbose: b
                     fixed[inc["_id"]] = rec.action
                     break
             attempts_used.append(attempt)
-            if verbose and i % 25 == 0:
+            if i % 25 == 0:
                 window = first_try[-25:]
+                curve.append({"epoch": epoch, "incidents": f"{i - 24}-{i}",
+                              "first_try_rate": round(sum(window) / len(window), 3),
+                              "avg_attempts": round(sum(attempts_used[-25:]) / 25, 2)})
+            if verbose and i % 25 == 0:
                 print(f"  epoch {epoch}  incidents {i - 24:>3}-{i:<3}  first-try fix rate "
                       f"{sum(window) / len(window):5.0%}  avg attempts {sum(attempts_used[-25:]) / 25:.2f}")
         experiences(db).insert_many(new_docs)
@@ -421,7 +427,7 @@ def train(db: Database | None = None, seed: int = 7, epochs: int = 2, verbose: b
         for inc in incidents:
             if inc["_id"] in fixed:
                 _remember_mock_fix(inc, fixed[inc["_id"]], db)
-    return {"incidents": len(incidents), "epochs": epochs, "real_experiences": real,
+    return {"incidents": len(incidents), "epochs": epochs, "real_experiences": real, "curve": curve,
             "experiences": experiences(db).count_documents({}),
             "first_try_rate_first_20": sum(first_try[:20]) / min(20, len(first_try)),
             "first_try_rate_last_20": sum(first_try[-20:]) / min(20, len(first_try))}
@@ -455,6 +461,17 @@ def evaluate(db: Database | None = None, n: int = 60, seed: int = 999,
             "per_bug": {k: round(sum(v) / len(v), 2) for k, v in sorted(per_class.items())}}
 
 
+def save_training_run(before: dict, after: dict, out: dict, db: Database | None = None) -> None:
+    """Keep a summary of each training run so the dashboard can show the learning curve."""
+    m.get_db(db)[TRAINING_RUNS].insert_one({
+        "at": m.utcnow(), "embedding_model": memory.embedding_model(),
+        "accuracy_before": round(before["accuracy"], 3), "accuracy_after": round(after["accuracy"], 3),
+        "per_bug": after["per_bug"], "eval_incidents": after["n"], "curve": out["curve"],
+        "mock_incidents": out["incidents"], "epochs": out["epochs"],
+        "experiences": out["experiences"], "real_experiences": out["real_experiences"],
+    })
+
+
 def stats(db: Database | None = None) -> list[dict]:
     return list(experiences(db).aggregate([
         {"$group": {"_id": {"app": "$app", "action": "$action"}, "tries": {"$sum": 1},
@@ -466,7 +483,8 @@ def stats(db: Database | None = None) -> list[dict]:
 def clear_mock(db: Database | None = None) -> dict:
     return {"mock_incidents": mock_incidents(db).delete_many({}).deleted_count,
             "experiences": experiences(db).delete_many({"source": "mock"}).deleted_count,
-            "memories": m.memories(db).delete_many({"mock": True}).deleted_count}
+            "memories": m.memories(db).delete_many({"mock": True}).deleted_count,
+            "training_runs": m.get_db(db)[TRAINING_RUNS].delete_many({}).deleted_count}
 
 
 # --------------------------------------------------------------------------- #
@@ -496,6 +514,7 @@ def main(argv: list[str] | None = None) -> None:
         print("training on mock incidents (+ real finished incidents)...")
         out = train(db)
         after = evaluate(db)
+        save_training_run(before, after, out, db)
         print(f"after training:  {after['accuracy']:.0%} first-pick accuracy on unseen incidents")
         for bug, acc in after["per_bug"].items():
             print(f"    {bug:<24} {acc:.0%}")

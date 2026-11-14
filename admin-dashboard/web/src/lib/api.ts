@@ -132,6 +132,37 @@ export type DependencyCheck = {
   latency_ms: number | null;
 };
 
+export type LearningStrategy = { app: string; action: string; tries: number; successes: number; success_rate: number; real_tries: number };
+export type LearningCurvePoint = { epoch: number; incidents: string; first_try_rate: number; avg_attempts: number };
+export type Learning = {
+  available: boolean;
+  totals: { experiences?: number; real_experiences?: number; mock_incidents?: number; memories?: number };
+  strategies: LearningStrategy[];
+  training: {
+    at: string;
+    embedding_model: string | null;
+    accuracy_before: number;
+    accuracy_after: number;
+    per_bug: Record<string, number>;
+    eval_incidents: number | null;
+    curve: LearningCurvePoint[];
+    mock_incidents: number | null;
+    epochs: number | null;
+  } | null;
+  decisions: {
+    incident_id: string;
+    app: string | null;
+    source: string;
+    status: string | null;
+    created_at: string | null;
+    action: string | null;
+    expected_success: number | null;
+    hinted: boolean;
+    pr_url: string | null;
+  }[];
+  vector_indexes: { collection: string; name: string | null; status: string | null; queryable: boolean }[];
+};
+
 export type Summary = {
   overall: { status: Status; label: string; affected_services: string[] };
   window: Window;
