@@ -1,0 +1,39 @@
+# Services watched by the OpsRelay uptime monitor.
+# Endpoints were confirmed from the apps' code:
+#   NovaMart    GET /api/health            -> 200 {"status":"ok"}
+#               GET /api/health/checkout   -> 200 {"status":"healthy"} | 503 {"status":"unhealthy", "failed_checks", "checks"}
+#   NovaConnect GET /health                -> 200 {"service":"messaging","status":"ok"}
+#               GET /api/monitor/probe     -> 200 {"status":"healthy"} | 503 {"status":"unhealthy", "failed_checks", "checks"}
+# Both functional probes are side-effect free (no orders, no real messages).
+
+[monitor]
+interval_seconds = 30          # production/demo default; OPSRELAY_MONITOR_INTERVAL overrides
+retention_days = 35            # raw check samples (covers the 30-day window)
+incident_retention_days = 180  # resolved incidents
+stale_after_intervals = 3      # last check older than 3 intervals -> status "unknown"
+
+[[services]]
+id = "novamart"
+name = "NovaMart"
+app = "shopping"
+description = "E-commerce storefront and simulated checkout"
+frontend_url = "http://localhost:3100"
+backend_url = "http://localhost:8100"
+availability_path = "/api/health"
+functional_path = "/api/health/checkout"
+functional_method = "GET"
+timeout_seconds = 5
+functional_timeout_seconds = 10
+
+[[services]]
+id = "novaconnect"
+name = "NovaConnect"
+app = "messaging"
+description = "Real-time messaging (REST + WebSockets)"
+frontend_url = "http://localhost:3200"
+backend_url = "http://localhost:8200"
+availability_path = "/health"
+functional_path = "/api/monitor/probe"
+functional_method = "GET"
+timeout_seconds = 5
+functional_timeout_seconds = 10
