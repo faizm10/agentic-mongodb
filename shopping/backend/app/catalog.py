@@ -7,7 +7,7 @@ from typing import Callable, Iterable, Literal
 
 from .errors import ProductNotFoundError
 
-_UNSPLASH = "https://images.unsplash.com/photos/"
+_UNSPLASH = "https://images.unsplash.com/photo-"
 
 
 @dataclass(frozen=True)
