@@ -51,6 +51,7 @@ from pymongo.errors import DuplicateKeyError
 
 from agents import memory
 from agents import mongodb as m
+from agents import rl_policy
 
 LEASE_SECONDS = int(os.getenv("LEASE_SECONDS", "120"))
 MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "3"))
@@ -301,9 +302,38 @@ class Orchestrator:
 
     def _retrieve_memory(self, inc: dict) -> dict:
         similar = memory.find_similar(self._failed_run(inc), k=3, db=self.db)
-        return self._advance(inc, "memory_retrieved", {"similar": similar}, {
+        fields: dict = {}
+        rec = self._rl_recommend(inc)
+        if rec:
+            fields["rl"] = {**rec.as_doc(), "hinted": rec.confident}
+            if rec.confident:
+                # Only a pick backed by real experience is shown to the agent, after the memories.
+                similar = [*similar, rec.as_hint()]
+        return self._advance(inc, "memory_retrieved", {"similar": similar, **fields}, {
             "matches": [{"memory_id": s["memory_id"], "score": round(s["score"], 3),
-                         "summary": s.get("summary")} for s in similar]})
+                         "summary": s.get("summary")} for s in similar],
+            **({"rl_action": fields["rl"]["action"]} if rec else {})})
+
+    # ---- reinforcement learning (never allowed to break the pipeline) ------ #
+    def _rl_recommend(self, inc: dict):
+        try:
+            return rl_policy.recommend(self._failed_run(inc), db=self.db, explore=False)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [rl] no recommendation ({type(e).__name__}: {e})")
+            return None
+
+    def _rl_reward(self, inc: dict, patch: dict, tests_passed: bool) -> None:
+        """Record what the agent actually tried and whether it worked."""
+        try:
+            rl = inc.get("rl") or {}
+            # Credit the fix the patch actually implements; else the hint, if the agent saw one.
+            action = rl_policy.action_for_patch(patch.get("diff")) or (rl.get("action") if rl.get("hinted") else None)
+            if action:
+                rl_policy.record(self._failed_run(inc), action, 1.0 if tests_passed else 0.0,
+                                 source=inc.get("source") or m.SOURCE_CI, incident_id=inc["_id"],
+                                 exp_id=f"exp:{inc['_id']}", db=self.db)
+        except Exception as e:  # noqa: BLE001
+            print(f"  [rl] could not record reward ({type(e).__name__}: {e})")
 
     def _repair(self, inc: dict) -> dict:
         result = self.repairer.repair(self._failed_run(inc), inc.get("similar", []))
@@ -311,6 +341,7 @@ class Orchestrator:
         verification = {"tests_passed": bool(result.get("tests_passed")),
                         "test_output": (result.get("test_output") or "")[-4000:],
                         "verified_at": m.utcnow()}
+        self._rl_reward(inc, patch, verification["tests_passed"])
         if not verification["tests_passed"]:
             # Don't open a PR for an unverified patch: leave it for a human.
             inc = self._update(inc["_id"], {"patch": patch, "verification": verification})
@@ -405,6 +436,9 @@ class Orchestrator:
                 continue
             if status == m.STATUS_REJECTED and inc.get("memory_id"):
                 memory.forget(inc["memory_id"], f"PR #{pr.get('number')} closed without merge", db=self.db)
+            # The human's decision is the final reward for the policy's choice.
+            rl_policy.set_reward(f"exp:{inc['_id']}", 1.0 if state == "merged" else 0.0,
+                                 f"PR #{pr.get('number')} {state}", db=self.db)
             m.log_step(inc["_id"], "review", "completed", self.worker_id,
                        {"pr_number": pr.get("number"), "pr_state": state, "status": status}, db=self.db)
             print(f"{'✔' if state == 'merged' else '✘'} {inc['_id']}: PR #{pr.get('number')} {state} -> {status}")
@@ -629,6 +663,7 @@ def main() -> None:
 
     if a.cmd == "setup":
         m.ensure_setup()
+        rl_policy.ensure_setup()
         print("setup complete")
     elif a.cmd == "worker":
         orch, monitor = _build_real()
