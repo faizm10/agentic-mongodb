@@ -113,6 +113,13 @@ class RepairRequest(BaseModel):
     similar_incidents: list[PriorIncident] = Field(default_factory=list)
     live_check: LiveCheckResult | None = Field(None, description="Failed live probe, when that is the evidence.")
     service_logs: str = Field("", description="Recent service logs around the failure.")
+    probe_details: str = Field(
+        "", description="The app's own failing probe checks (JSON), e.g. from Taha's uptime monitor."
+    )
+    added_tests: dict[str, str] = Field(
+        default_factory=dict,
+        description="New regression test files (path -> content) added to every verification copy.",
+    )
 
 
 # --- Outputs ----------------------------------------------------------------
@@ -204,3 +211,6 @@ class RepairResult(BaseModel):
     reproduce_after_patch: list[TestRun] = Field(default_factory=list)
     patched_suite: TestRun | None = Field(default=None, description="Full app suite after patch.")
     attempts: list[CandidateAttempt] = Field(default_factory=list)
+    added_tests: list[str] = Field(
+        default_factory=list, description="New test files included in patch and patched_files."
+    )

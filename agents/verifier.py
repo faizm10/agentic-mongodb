@@ -9,6 +9,8 @@ Isolation model:
 - Commands are fixed by apps.toml; only validated pytest node ids are appended.
 - Every run has a timeout and its whole process group is killed on expiry.
 - The temp directory is deleted afterwards.
+- New regression tests (``added_tests``) may only be ``<root>/<test_dir>/test_opsrelay_*.py``
+  files that do not exist yet; they are written into the export before anything runs.
 
 This is process-level isolation, not a container: tests can still reach the network.
 """
@@ -34,6 +36,8 @@ from .patcher import validate_patch
 OUTPUT_TAIL_CHARS = 4_000
 
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
+_ADDED_TEST_NAME_RE = re.compile(r"^test_opsrelay_[a-z0-9_]{1,48}\.py$")
+MAX_ADDED_TEST_CHARS = 16_000
 _NODE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*\.py(::[A-Za-z0-9_\[\]\-.]+)*$")
 
 _GIT_ENV = {
@@ -86,11 +90,19 @@ class VerificationSession:
     caller only wants ``run_suite`` (a live incident looking for a reproduction).
     """
 
-    def __init__(self, app: AppConfig, repo_path: str, commit_sha: str, failing_tests: list[str] | None = None):
+    def __init__(
+        self,
+        app: AppConfig,
+        repo_path: str,
+        commit_sha: str,
+        failing_tests: list[str] | None = None,
+        added_tests: dict[str, str] | None = None,
+    ):
         self.app = app
         self.repo_path = repo_path
         self.commit_sha = commit_sha
         self.failing_tests = failing_tests or []
+        self.added_tests = added_tests or {}
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._candidates = 0
 
@@ -113,6 +125,15 @@ class VerificationSession:
         if not (self.pristine / self.app.root).is_dir():
             self.__exit__(None, None, None)
             raise VerificationError(f"app root {self.app.root!r} does not exist at {self.commit_sha}")
+        for path, content in self.added_tests.items():
+            problem = added_test_violation(path, content, self.app)
+            if problem is None and (self.pristine / path).exists():
+                problem = f"{path} already exists at {self.commit_sha}"
+            if problem:
+                self.__exit__(None, None, None)
+                raise VerificationError(f"refusing added test: {problem}")
+            # Untracked in the throwaway repo, so candidate diffs and their checks never see it.
+            (self.pristine / path).write_text(content)
         self.env = _sandbox_env(self.root)
         return self
 
@@ -221,6 +242,21 @@ def verify_patch(
         patch=diff, changed_files=check.changed_files, patched_files=check.files, baseline=baseline.runs,
         reproduce_after_patch=check.reproduce_runs, patched_suite=check.suite,
     )
+
+
+def added_test_violation(path: str, content: str, app: AppConfig) -> str | None:
+    """Why ``path`` cannot be added as a new regression test, or None if it can."""
+    test_dir = f"{app.root.rstrip('/')}/{app.test_dir.strip('/')}"
+    folder, _, name = path.rpartition("/")
+    if folder != test_dir or not _ADDED_TEST_NAME_RE.match(name):
+        return f"{path!r} must be {test_dir}/test_opsrelay_<lowercase_name>.py"
+    if len(content) > MAX_ADDED_TEST_CHARS:
+        return f"{path} is {len(content)} chars; the limit is {MAX_ADDED_TEST_CHARS}"
+    try:
+        compile(content, path, "exec")
+    except SyntaxError as exc:
+        return f"{path} is not valid Python: {exc.msg} (line {exc.lineno})"
+    return None
 
 
 def _validate_node_ids(node_ids: list[str], app: AppConfig) -> tuple[list[str], list[str]]:

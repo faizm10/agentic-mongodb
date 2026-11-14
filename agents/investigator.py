@@ -192,11 +192,14 @@ def _build_prompt(
         parts.append("Parsed traceback frames (outermost first):\n" + listing)
     if request.failed_test_logs:
         parts.append(untrusted_block("ci_log", request.failed_test_logs))
-    if request.live_check is not None:
+    if request.live_check is not None or request.probe_details:
         parts.append("Failed live check of the running service:\n"
                      + untrusted_block("live_probe", _probe_text(request), limit=4_000))
     if request.service_logs:
         parts.append(untrusted_block("service_logs", request.service_logs, limit=8_000))
+    for path, content in request.added_tests.items():
+        parts.append(f'Regression test "{path}", added to reproduce the failure (not app code):\n'
+                     + untrusted_block("source_file", numbered(content)))
     if reproduction:
         parts.append("Local rerun of the failing tests at the failed commit:\n"
                      + untrusted_block("reproduction", reproduction, limit=6_000))
@@ -213,7 +216,10 @@ def _build_prompt(
 
 
 def _probe_text(request: RepairRequest) -> str:
-    return request.live_check.model_dump_json(indent=1) if request.live_check else ""
+    text = request.live_check.model_dump_json(indent=1) if request.live_check else ""
+    if request.probe_details:
+        text += "\nFailing probe checks reported by the app:\n" + request.probe_details
+    return text
 
 
 def _rank(paths: list[str], frames: list[TracebackFrame]) -> list[str]:
@@ -239,7 +245,7 @@ def _source_text(evidence: _EvidenceDraft, request: RepairRequest, reproduction:
     if evidence.source == "recent_diff":
         return request.recent_diff
     if evidence.source == "source_file":
-        return request.source_files.get(evidence.reference)
+        return request.source_files.get(evidence.reference) or request.added_tests.get(evidence.reference)
     for incident in request.similar_incidents:
         if incident.id == evidence.reference:
             return incident.model_dump_json()

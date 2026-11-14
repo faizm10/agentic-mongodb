@@ -17,7 +17,7 @@ from datetime import UTC, datetime
 from .contracts import CandidateAttempt, RepairRequest, RepairResult, load_app_config
 from .investigator import investigate, parse_failing_tests
 from .llm import OpenAIStructuredLLM, StructuredLLM
-from .patcher import propose_patches
+from .patcher import new_file_diff, propose_patches
 from .verifier import VerificationError, VerificationSession
 
 
@@ -42,7 +42,9 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
         return done("needs_review", "no failing pytest node ids found in the CI log")
 
     try:
-        with VerificationSession(app, request.repo_path, request.commit_sha, failing) as session:
+        with VerificationSession(
+            app, request.repo_path, request.commit_sha, failing, added_tests=request.added_tests
+        ) as session:
             baseline = session.reproduce()
             if baseline.flaky:
                 return done(
@@ -84,12 +86,16 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
                 passing = [a for a in round_attempts if a.passed]
                 if passing:
                     best = min(passing, key=lambda a: (a.changed_lines, len(a.changed_files), a.index))
+                    # Agent-added regression tests ship with the fix so reviewers see the proof.
+                    added = list(request.added_tests)
                     return done(
                         "verified",
                         f"{best.reason}; chose candidate {best.round}.{best.index} "
                         f"({best.changed_lines} changed lines) of {len(attempts)} tried",
-                        diagnosis=diagnosis, patch=best.patch, changed_files=best.changed_files,
-                        patched_files=best.files,
+                        diagnosis=diagnosis,
+                        patch=best.patch + "".join(new_file_diff(p, request.added_tests[p]) for p in added),
+                        changed_files=best.changed_files + added,
+                        patched_files={**best.files, **request.added_tests}, added_tests=added,
                         baseline=baseline.runs, reproduce_after_patch=best.reproduce_runs,
                         patched_suite=best.suite, attempts=attempts,
                     )

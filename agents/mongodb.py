@@ -4,7 +4,8 @@ Owns the connection, collections, schema validation and indexes.
 
 Collections
 -----------
-incidents       One document per failed CI run (deduped on repo+run_id+run_attempt).
+incidents       One document per failed CI run (deduped on repo+run_id+run_attempt), or
+                per live incident from the uptime monitor (source="live", deduped on _id).
                 Holds the *current verified state* of the workflow, so a restarted
                 worker resumes by reading one document - no history replay.
 workflow_steps  Append-only audit log. Every stage transition is written here with
@@ -54,6 +55,11 @@ STATUS_OPEN = "open"                  # waiting for / being processed by a worke
 STATUS_NEEDS_REVIEW = "needs_review"  # agent stopped (e.g. tests failed) - human needed
 STATUS_AWAITING_MERGE = "awaiting_merge"  # draft PR opened and verified - done for the agent
 STATUS_FAILED = "failed"              # unrecoverable error after max attempts
+STATUS_RESOLVED = "resolved"          # a human approved and merged the PR
+STATUS_REJECTED = "rejected"          # a human closed the PR without merging
+
+SOURCE_CI = "ci"      # failed GitHub Actions run (Hamza's monitor); the default when absent
+SOURCE_LIVE = "live"  # failed live probe (Taha's uptime monitor)
 
 _client: MongoClient | None = None
 
@@ -117,17 +123,23 @@ def memories(db: Database | None = None) -> Collection:
 INCIDENT_SCHEMA = {
     "$jsonSchema": {
         "bsonType": "object",
-        "required": ["_id", "repo", "app", "run_id", "run_attempt", "commit_sha",
-                     "status", "stage", "created_at", "updated_at"],
+        "required": ["_id", "repo", "app", "commit_sha", "status", "stage", "created_at", "updated_at"],
+        # CI incidents are identified by their run; live incidents carry the uptime evidence.
+        "anyOf": [
+            {"required": ["run_id", "run_attempt"]},
+            {"required": ["source", "live"], "properties": {"source": {"enum": [SOURCE_LIVE]}}},
+        ],
         "properties": {
+            "source": {"enum": [SOURCE_CI, SOURCE_LIVE]},
+            "live": {"bsonType": "object", "required": ["uptime_incident_id"]},
             "_id": {"bsonType": "string"},
             "repo": {"bsonType": "string"},
             "app": {"enum": ["shopping", "messaging"]},
             "run_id": {"bsonType": ["long", "int"]},
             "run_attempt": {"bsonType": ["long", "int"], "minimum": 1},
             "commit_sha": {"bsonType": "string", "minLength": 7},
-            "status": {"enum": [STATUS_OPEN, STATUS_NEEDS_REVIEW,
-                                STATUS_AWAITING_MERGE, STATUS_FAILED]},
+            "status": {"enum": [STATUS_OPEN, STATUS_NEEDS_REVIEW, STATUS_AWAITING_MERGE,
+                                STATUS_FAILED, STATUS_RESOLVED, STATUS_REJECTED]},
             "stage": {"enum": STAGES},
             "pr_intent": {
                 "bsonType": "object",
@@ -194,9 +206,10 @@ def ensure_setup(db: Database | None = None, vector_index: bool = True) -> None:
     _ensure_collection(db, MEMORIES, MEMORY_SCHEMA)
 
     inc = db[INCIDENTS]
-    # Dedup guard: the same GitHub run attempt can only ever create one incident.
-    inc.create_index([("repo", ASCENDING), ("run_id", ASCENDING), ("run_attempt", ASCENDING)],
-                     unique=True, name="uniq_run")
+    # Dedup guard: the same GitHub run attempt can only ever create one incident. Partial, so
+    # live incidents (no run_id) don't all collide on a null key.
+    _ensure_index(inc, [("repo", ASCENDING), ("run_id", ASCENDING), ("run_attempt", ASCENDING)],
+                  name="uniq_run", unique=True, partialFilterExpression={"run_id": {"$exists": True}})
     inc.create_index([("status", ASCENDING), ("lease.expires_at", ASCENDING)], name="resumable")
     inc.create_index([("pr_intent.branch", ASCENDING)], sparse=True, name="pr_branch")
 
@@ -208,6 +221,17 @@ def ensure_setup(db: Database | None = None, vector_index: bool = True) -> None:
 
     if vector_index:
         ensure_vector_index(db)
+
+
+def _ensure_index(coll: Collection, keys: list, name: str, **options) -> None:
+    """create_index, replacing an existing index of the same name whose options changed."""
+    try:
+        coll.create_index(keys, name=name, **options)
+    except OperationFailure as e:
+        if e.code not in (85, 86):  # IndexOptionsConflict / IndexKeySpecsConflict
+            raise
+        coll.drop_index(name)
+        coll.create_index(keys, name=name, **options)
 
 
 def ensure_vector_index(db: Database | None = None) -> None:

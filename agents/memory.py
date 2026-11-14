@@ -72,11 +72,20 @@ def _local_embed(text: str) -> list[float]:
 
 def failure_text(run: dict[str, Any]) -> str:
     """Canonical text we embed for a failed run (query side and memory side match)."""
-    logs = run.get("failed_logs") or run.get("logs") or ""
+    logs = run.get("failed_logs") or run.get("logs") or _live_text(run.get("live"))
     # Keep the tail: pytest puts assertion errors and the summary at the end.
     logs = logs[-MAX_LOG_CHARS:]
     tests = ", ".join(run.get("failed_tests") or [])
     return f"app: {run.get('app')}\nfailed tests: {tests}\nlogs:\n{logs}"
+
+
+def _live_text(live: dict[str, Any] | None) -> str:
+    """Live incidents have no CI log: embed the failing probe checks instead."""
+    if not live:
+        return ""
+    checks = "\n".join(f"{f.get('check') or f.get('name')} {f.get('source') or ''} {f.get('reason') or ''}"
+                       for f in live.get("probe_failures") or [])
+    return f"{live.get('failure_type') or ''}: {live.get('summary') or ''}\n{checks}"
 
 
 # --------------------------------------------------------------------------- #

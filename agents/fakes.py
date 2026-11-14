@@ -38,9 +38,16 @@ class FakeGitHub:
         self.create_calls += 1
         number = 100 + len(prs) + 1
         prs[key] = {"number": number, "url": f"https://github.com/{repo}/pull/{number}",
-                    "branch": branch, "title": title, "draft": True}
+                    "branch": branch, "title": title, "draft": True, "state": "open",
+                    "body": body, "files": sorted((patch.get("files") or {}))}
         self._save(prs)
         return prs[key]
+
+    def set_state(self, repo: str, branch: str, state: str) -> None:
+        """Simulate a human merging ("merged") or closing ("closed") the PR."""
+        prs = self._load()
+        prs[f"{repo}:{branch}"]["state"] = state
+        self._save(prs)
 
 
 class FakeRepairer:
