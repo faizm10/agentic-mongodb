@@ -26,6 +26,15 @@ def test_parse_failing_tests_strips_app_root_and_dedupes():
     assert parse_failing_tests(logs, SHOPPING) == ["tests/test_cart.py::test_a", "tests/test_checkout.py::test_b"]
 
 
+def test_parse_failing_tests_ignores_captured_log_lines():
+    logs = (
+        'ERROR    novamart:main.py:39 {"event": "checkout_probe_failed"}\n'
+        "FAILED tests/test_discounts.py::test_discount_amounts[WELCOME10-10000-1000]\n"
+    )
+
+    assert parse_failing_tests(logs, SHOPPING) == ["tests/test_discounts.py::test_discount_amounts[WELCOME10-10000-1000]"]
+
+
 def test_fabricated_evidence_forces_needs_review(shopping):
     draft = diagnosis_draft(evidence=[
         _EvidenceDraft(source="ci_log", reference="ci_log", excerpt="KeyError: 'coupon'", supports="invented"),

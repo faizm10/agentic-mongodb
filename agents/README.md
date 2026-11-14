@@ -186,7 +186,7 @@ result = repair_ci_failure(RepairRequest(
     commit_sha="3f2c9e1",
     failed_test_logs=job_log_text,         # raw GitHub Actions job log
     recent_diff=diff_text,                 # e.g. `git diff <parent> <sha>`
-    source_files={"shopping/src/shopping/cart.py": cart_source_at_sha},
+    source_files={"shopping/backend/app/pricing.py": pricing_source_at_sha},
     similar_incidents=[PriorIncident(id="inc-42", summary="...", root_cause="...")],
 ))
 
@@ -233,5 +233,13 @@ Model and API errors are raised so the orchestrator can apply its own retry poli
 
 `apps.toml` sets each app's root, editable `source_dirs`, `test_dir`, fixed
 `pytest_args` and timeout. `baseline_runs`, `max_candidates` and `max_rounds` default to
-2, 3 and 2 and can be set per app. The Shopping and Messaging entries are placeholders until
-the demo apps land in `shopping/` and `message-platform/`.
+2, 3 and 2 and can be set per app.
+
+- **Shopping** points at Taha's NovaMart backend: `root = "shopping/backend"`, with
+  patches limited to `shopping/backend/app`. Its test dependencies (`fastapi`, `httpx`,
+  `uvicorn`) are listed in `agents/requirements.txt`, because the verifier runs pytest
+  with the agents interpreter. `tests/test_novamart_repair.py` commits a bug from
+  `shopping/inject_bug.py` and repairs it end to end against the real code.
+- **Messaging** is still a placeholder until `message-platform/` lands.
+- **Overrides:** set `OPSRELAY_APPS_CONFIG` to use a different file. The test suite points
+  it at `tests/apps.toml`, which describes the stand-in fixtures.

@@ -1,4 +1,10 @@
+import os
+from pathlib import Path
+
 import pytest
+
+# Fixture apps (stand-in layouts), set before any test module loads its config.
+os.environ["OPSRELAY_APPS_CONFIG"] = str(Path(__file__).with_name("apps.toml"))
 
 from .support import build_shopping_regression
 
