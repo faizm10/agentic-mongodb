@@ -186,7 +186,7 @@ result = repair_ci_failure(RepairRequest(
     commit_sha="3f2c9e1",
     failed_test_logs=job_log_text,         # raw GitHub Actions job log
     recent_diff=diff_text,                 # e.g. `git diff <parent> <sha>`
-    source_files={"shopping/src/shopping/cart.py": cart_source_at_sha},
+    source_files={"shopping/backend/app/pricing.py": pricing_source_at_sha},
     similar_incidents=[PriorIncident(id="inc-42", summary="...", root_cause="...")],
 ))
 
@@ -233,5 +233,53 @@ Model and API errors are raised so the orchestrator can apply its own retry poli
 
 `apps.toml` sets each app's root, editable `source_dirs`, `test_dir`, fixed
 `pytest_args` and timeout. `baseline_runs`, `max_candidates` and `max_rounds` default to
-2, 3 and 2 and can be set per app. The Shopping and Messaging entries are placeholders until
-the demo apps land in `shopping/` and `message-platform/`.
+2, 3 and 2 and can be set per app.
+
+- **Shopping** points at Taha's NovaMart backend: `root = "shopping/backend"`, with
+  patches limited to `shopping/backend/app`. Its test dependencies (`fastapi`, `httpx`,
+  `uvicorn`) are listed in `agents/requirements.txt`, because the verifier runs pytest
+  with the agents interpreter. `tests/test_novamart_repair.py` commits a bug from
+  `shopping/inject_bug.py` and repairs it end to end against the real code.
+- **Messaging** is still a placeholder until `message-platform/` lands.
+- **Overrides:** set `OPSRELAY_APPS_CONFIG` to use a different file. The test suite points
+  it at `tests/apps.toml`, which describes the stand-in fixtures.
+
+---
+
+
+
+## MongoDB & workflow recovery (Mo)
+
+| File | What it does |
+|---|---|
+| `mongodb.py` | Atlas connection, `incidents` / `workflow_steps` / `memories` collections, JSON-schema validation, unique dedup index, TTL index, Vector Search index, change stream helper |
+| `memory.py` | Voyage embeddings (offline fallback), `find_similar` via `$vectorSearch` scoped per app, `remember_fix`, `seed_memory`, `forget` |
+| `orchestrator.py` | Stage machine with leases, fenced writes, PR-intent-before-GitHub, verify-after-send, resume, kill switch, CLI |
+| `fakes.py`, `dev_demo.py` | Fake GitHub/LLM so the full flow + crash demo runs before the other modules land |
+
+### Stages (incident.stage = last *verified* stage)
+`detected → memory_retrieved → patch_verified → pr_intent_saved → pr_confirmed → memory_saved`
+
+### Setup
+```bash
+python3 -m venv .venv && source .venv/bin/activate
+pip install -r requirements.txt
+cp .env.example .env   # fill MONGODB_URI
+python -m agents.mongodb            # creates collections, indexes, vector index
+python -m pytest agents/tests -q    # runs offline with mongomock
+```
+
+### Crash demo (fake GitHub, real Atlas)
+```bash
+python -m agents.dev_demo reset
+OPSRELAY_CRASH_AT=pr_created python -m agents.dev_demo run   # PR created, then worker dies
+python -m agents.dev_demo run                                # new worker resumes, adopts same PR
+python -m agents.orchestrator status "faizm10/agentic-mongodb#9000001.1"
+```
+
+### Interfaces the other modules must provide
+See the docstring at the top of `orchestrator.py`. Summary:
+
+- **Hamza** – `monitor.poll_failed_runs() -> [FailedRun]`, `github.find_pr(repo, branch)`, `github.open_draft_pr(repo, branch, base_sha, title, body, patch)` (idempotent on branch; commits `patch["files"]`).
+- **Faiz** – `repairer.repair(failed_run, similar) -> {tests_passed, test_output, diff, files, changed_files, summary, root_cause}`.
+- Wire the real classes in `_build_real()` in `orchestrator.py`.

@@ -1,13 +1,16 @@
 # Repair scope and fixed test commands for each demo app.
-# Paths are placeholders until Taha's Shopping and Messaging apps land; update
-# root/source_dirs/test_dir to match their layout.
+# root is where pytest runs (the directory holding pytest.ini); source_dirs and
+# test ids are repo-relative and root-relative respectively. Shopping matches
+# Taha's NovaMart layout; Messaging stays a placeholder until message-platform/ lands.
+# The verifier runs pytest with the agents interpreter, so each app's test
+# dependencies must be installed there (see agents/requirements.txt).
 #
 # A patch may only modify files under source_dirs. Tests, CI workflows,
 # dependency manifests and secrets are always rejected, even inside source_dirs.
 
 [apps.shopping]
-root = "shopping"
-source_dirs = ["shopping/src"]
+root = "shopping/backend"
+source_dirs = ["shopping/backend/app"]
 test_dir = "tests"
 pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
 timeout_seconds = 120

@@ -6,6 +6,7 @@ with ``model_dump()`` without this module touching MongoDB or GitHub.
 
 from __future__ import annotations
 
+import os
 import tomllib
 from datetime import datetime
 from pathlib import Path
@@ -37,7 +38,9 @@ class AppConfig(BaseModel):
     max_rounds: int = Field(2, description="Patch rounds; later rounds see earlier failures.")
 
 
-def load_app_config(app: str, path: Path = APPS_CONFIG_PATH) -> AppConfig:
+def load_app_config(app: str, path: Path | None = None) -> AppConfig:
+    """Config for ``app`` from ``path``, else ``$OPSRELAY_APPS_CONFIG``, else agents/apps.toml."""
+    path = path or Path(os.environ.get("OPSRELAY_APPS_CONFIG") or APPS_CONFIG_PATH)
     with path.open("rb") as f:
         apps = tomllib.load(f)["apps"]
     if app not in apps:

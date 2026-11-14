@@ -80,7 +80,15 @@ backend/.venv/bin/pip install -r backend/requirements.txt
 cd frontend && npm ci && cd ..
 ```
 
-Run in **two terminals**:
+Run both servers in **one terminal** from `shopping/`:
+
+```bash
+make dev
+```
+
+Press Ctrl+C to stop both. You can also run `python3 run_servers.py` directly.
+
+To run the servers separately, use two terminals:
 
 ```bash
 # Terminal 1: API on http://localhost:8100 (docs at /docs)
@@ -115,6 +123,7 @@ All commands run from `shopping/`. Each has a `make` shortcut.
 
 | Task | Command | Make |
 | --- | --- | --- |
+| Run both servers | `python3 run_servers.py` | `make dev` |
 | Run API (hot reload) | `cd backend && .venv/bin/uvicorn app.main:app --reload --port 8100` | `make backend` |
 | Run storefront (dev) | `cd frontend && npm run dev` | `make frontend` |
 | Backend tests | `cd backend && .venv/bin/pytest` | `make test` |
