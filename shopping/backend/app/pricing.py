@@ -96,7 +96,7 @@ def validate_quantity(quantity: int, *, product_id: str | None = None) -> int:
 def line_total(unit_price_cents: int, quantity: int) -> int:
     """Total for one cart line: unit price multiplied by the quantity ordered."""
     validate_quantity(quantity)
-    return unit_price_cents * max(quantity - 1, 1)
+    return unit_price_cents * quantity
 
 
 def resolve_promotion(code: str | None) -> Promotion | None:
