@@ -240,6 +240,8 @@ Base URL `http://localhost:8300`. Every success is `{"data": …, "meta": {"gene
 | POST | `/api/v1/monitor/check-now` | Run (`serve`) or request (`worker`) an immediate cycle |
 | POST | `/api/v1/demo/outages/{novamart\|novaconnect}` | Start one of the supported local demo outages (`{"scenario": "..."}`) |
 | DELETE | `/api/v1/demo/outages/{novamart\|novaconnect}` | Restore the selected app |
+| POST | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Push a real catalog bug to the base branch (`{"scenario": 1-3}`); see [Demo outage controls](#demo-outage-controls) |
+| DELETE | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Undo the live bad deploy: restore the checkout and push a revert if the fix is not merged |
 | POST | `/api/v1/incidents/{id}/acknowledge` | `{"by", "note"}` |
 | POST | `/api/v1/incidents/{id}/links` | `{"kind": "github_actions_run"\|"repair_pr"\|"other", "url": "https://…", "label"}`: idempotent per URL |
 
@@ -301,16 +303,15 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 
 ## Demo outage controls
 
-Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout**. On the dashboard overview, choose one of six controls:
+Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is.
 
-When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher starts the three platforms but does not start the repair agent; run `python -m agents.orchestrator worker` separately after configuring MongoDB and the agent credentials.
+Shipping one commits the bug on top of `origin/main` with a routine-looking message and **pushes it to `main`**, then applies the same change to the running checkout so the dev servers serve it. Your current branch, index and other files are not touched; the commit is built in a temporary index. The checkout probe fails within one cycle, the AI agent picks up the incident, reproduces it with the app's tests, and opens a draft fix PR against `main`. The CI run that fails on the same commit is skipped while the live incident covers it, so you get one PR.
 
-| App | Controls | Effect |
-| --- | --- | --- |
-| NovaMart | Fail payment, Fail image loading, Empty inventory | Checkout returns 503 before saving an order; storefront image requests fail; or products and checkout show zero stock. |
-| NovaConnect | Stop sending, Stop receiving, Stop both | Sending returns 503; history and recipient push delivery stop; or both paths stop. |
+**Restore** puts the checkout back and, if the bug is still on `main`, pushes a revert commit. After merging the agent's PR, use it to restore the local checkout; it does not push again. One bad deploy can be live per app. The push uses your normal git credentials for `origin`. Set `OPSRELAY_DEPLOY_REMOTE` or `OPSRELAY_DEPLOY_BRANCH` to push elsewhere. **Pushing to `main` affects everyone using the repository until the bug is fixed or reverted.**
 
-One scenario is active per app. Selecting another replaces it. Use **Restore NovaMart** or **Restore NovaConnect** to remove it; no source files or test fixtures are edited. The worker is asked to run a new check after every change. The dashboard shows service status without naming the active scenario; diagnostic evidence remains available through the uptime API for incident processing. These controls are for a local demo where all processes share the checkout and the apps use their default data paths. NovaMart payments remain simulated; no real payment is attempted.
+When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher also starts the repair agent worker when `.env` sets `MONGODB_URI`. Set `DEV_AGENT=0` to skip it, or run `python -m agents.orchestrator worker` yourself.
+
+The older flag-file outages (`/api/v1/demo/outages`, no code change) remain in the API. The agent reports them as configuration and hands them to a person, because there is no code to fix.
 
 ## Demo: degraded, down and recovery
 
