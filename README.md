@@ -16,14 +16,14 @@ The apps run independently. NovaMart stores demo orders in a local JSON file; No
 
 ## Run the demo locally
 
-Use **Python 3.12**, **Node.js 20**, and npm. From the repository root, install and start all six servers in one terminal:
+Use **Python 3.12**, **Node.js 20**, and npm. From the repository root, install and start all six servers and the AI agent worker in one terminal:
 
 ```bash
 ./dev.sh setup
 ./dev.sh
 ```
 
-The launcher starts NovaMart (ports 3100 and 8100), NovaConnect (3200 and 8200), and the uptime API and dashboard (8300 and 3300). It waits for the demo apps before starting the uptime worker, writes logs under `.dev/logs/`, and stops all servers with Ctrl+C. Run `./dev.sh logs` in another terminal to follow the logs. If those ports are occupied, use `DEV_PORT_OFFSET=1000 ./dev.sh` to shift all six ports. The CI repair agent is separate and is not started by this script.
+The launcher starts NovaMart (ports 3100 and 8100), NovaConnect (3200 and 8200), and the uptime API and dashboard (8300 and 3300). It waits for the demo apps before starting the uptime worker, writes logs under `.dev/logs/`, and stops all servers with Ctrl+C. Run `./dev.sh logs` in another terminal to follow the logs. If those ports are occupied, use `DEV_PORT_OFFSET=1000 ./dev.sh` to shift all six ports. When `.env` sets `MONGODB_URI`, the launcher also starts the AI agent worker after the dashboard is ready. The worker watches both apps and new uptime incidents, works on outages, and logs to `.dev/logs/agent-worker.log`. It also needs the agent credentials described below. If the worker stops, the six servers keep running. Use `DEV_AGENT=0 ./dev.sh` to start only the servers.
 
 To run components separately, use their Make targets. First install them:
 

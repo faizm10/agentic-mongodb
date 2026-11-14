@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, demo_outages
+from . import __version__, bad_deploys, demo_outages
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -148,6 +148,10 @@ class ServicePatch(BaseModel):
 
 class DemoOutageIn(BaseModel):
     scenario: Literal["payment", "images", "inventory", "send", "receive", "both"]
+
+
+class BadDeployIn(BaseModel):
+    scenario: int = Field(ge=1, le=3)
 
 
 # -------------------------------------------------------------------- the app
@@ -423,6 +427,40 @@ def create_app(
         except OSError as exc:
             logger.error("Cannot clear demo outage for %s: %s", service_id, exc)
             raise HTTPException(503, "The local demo outage could not be cleared.") from exc
+        storage.request_check(clock())
+        return ok({"service_id": service_id, "requested": True})
+
+    # Bad deploys push a real bug to the base branch on GitHub. Responses never name the
+    # bug: the repair agent must find it from the evidence.
+    @app.post("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]])
+    def ship_bad_deploy(service_id: str, body: BadDeployIn):
+        if service_id not in bad_deploys.APPS:
+            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
+        service_or_404(service_id)
+        try:
+            bad_deploys.ship(service_id, body.scenario)
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
+        except bad_deploys.BadDeployError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            logger.error("Cannot ship bad deploy for %s: %s", service_id, exc)
+            raise HTTPException(503, "The local demo app is unavailable in this checkout.") from exc
+        storage.request_check(clock())
+        return ok({"service_id": service_id, "requested": True, "branch": bad_deploys.branch()})
+
+    @app.delete("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]])
+    def restore_bad_deploy(service_id: str):
+        if service_id not in bad_deploys.APPS:
+            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
+        service_or_404(service_id)
+        try:
+            bad_deploys.restore(service_id)
+        except bad_deploys.BadDeployError as exc:
+            raise HTTPException(409, str(exc)) from exc
+        except OSError as exc:
+            logger.error("Cannot restore bad deploy for %s: %s", service_id, exc)
+            raise HTTPException(503, "The bad deploy could not be restored.") from exc
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 

@@ -38,6 +38,17 @@ def test_dedup(db):
     iid2, created2 = o.ingest_failed_run(SAMPLE_RUN, db=db)
     assert created and not created2 and iid == iid2
     assert m.incidents(db).count_documents({}) == 1
+
+
+def test_ci_run_covered_by_live_incident_at_same_commit(db):
+    assert o.live_incident_covering(SAMPLE_RUN, db=db) is None
+    live = {"uptime_incident_id": "UPT-novamart-1", "app": SAMPLE_RUN["app"]}
+    iid, _ = o.ingest_live_incident(SAMPLE_RUN["repo"], live, SAMPLE_RUN["commit_sha"], db=db)
+    assert o.live_incident_covering(SAMPLE_RUN, db=db) == iid
+    assert o.live_incident_covering({**SAMPLE_RUN, "commit_sha": "f" * 40}, db=db) is None
+    # A live incident handed to a human no longer covers the run, so CI can try its own repair.
+    m.incidents(db).update_one({"_id": iid}, {"$set": {"status": m.STATUS_NEEDS_REVIEW}})
+    assert o.live_incident_covering(SAMPLE_RUN, db=db) is None
     # A re-run of the same workflow is a different attempt -> new incident
     _, created3 = o.ingest_failed_run({**SAMPLE_RUN, "run_attempt": 2}, db=db)
     assert created3

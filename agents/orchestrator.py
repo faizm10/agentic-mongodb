@@ -132,6 +132,18 @@ def ingest_failed_run(run: dict, db: Database | None = None,
     return iid, created
 
 
+def live_incident_covering(run: dict, db: Database | None = None) -> str | None:
+    """The live incident already repairing this run's app at its commit, if any.
+
+    A bad deploy fails CI and the uptime probe for the same commit; working both would
+    open two PRs for one bug. The live intake skips the reverse case (agents/intake.py).
+    """
+    doc = m.incidents(db).find_one(
+        {"source": m.SOURCE_LIVE, "app": run.get("app"), "commit_sha": run.get("commit_sha"),
+         "status": {"$in": [m.STATUS_OPEN, m.STATUS_AWAITING_MERGE]}}, {"_id": 1})
+    return doc["_id"] if doc else None
+
+
 def live_incident_id(repo: str, uptime_incident_id: str) -> str:
     return f"{repo}#{uptime_incident_id}"
 
@@ -410,6 +422,11 @@ class Orchestrator:
         while True:
             try:
                 for run in monitor.poll_failed_runs():
+                    covering = live_incident_covering(run, db=self.db)
+                    if covering:
+                        print(f"· CI run {run['run_id']} skipped: live incident {covering} covers "
+                              f"{run['app']} at {run['commit_sha'][:7]}")
+                        continue
                     iid, created = ingest_failed_run(run, db=self.db)
                     print(f"{'＋ new' if created else '· seen'} incident {iid}")
                 if live_intake is not None:

@@ -6,47 +6,65 @@ import type { ServiceOverview } from "@/lib/api";
 import { StatusPill } from "@/components/ui";
 
 type ServiceId = "novamart" | "novaconnect";
-type Scenario = "payment" | "images" | "inventory" | "send" | "receive" | "both";
 
-const GROUPS: { id: ServiceId; name: string; actions: { scenario: Scenario; label: string }[] }[] = [
+// Each control pushes a real code bug to main (see uptime/bad_deploys.py). Labels name
+// what customers notice, and only the scenario number is sent, never the bug.
+const GROUPS: { id: ServiceId; name: string; actions: { scenario: 1 | 2 | 3; label: string }[] }[] = [
   {
     id: "novamart",
     name: "NovaMart",
     actions: [
-      { scenario: "payment", label: "Fail payment" },
-      { scenario: "images", label: "Fail image loading" },
-      { scenario: "inventory", label: "Empty inventory" },
+      { scenario: 1, label: "Wrong cart totals" },
+      { scenario: 2, label: "Broken promo codes" },
+      { scenario: 3, label: "Overselling stock" },
     ],
   },
   {
     id: "novaconnect",
     name: "NovaConnect",
     actions: [
-      { scenario: "send", label: "Stop sending" },
-      { scenario: "receive", label: "Stop receiving" },
-      { scenario: "both", label: "Stop both" },
+      { scenario: 1, label: "Duplicate messages" },
+      { scenario: 2, label: "Wrong delivery status" },
+      { scenario: 3, label: "Messages out of order" },
     ],
   },
 ];
+
+async function errorMessage(response: Response): Promise<string | null> {
+  try {
+    const body = await response.json();
+    return typeof body?.error?.message === "string" ? body.error.message : null;
+  } catch {
+    return null;
+  }
+}
 
 export function OutageControls({ services, onChange }: { services: ServiceOverview[]; onChange: () => void }) {
   const [pending, setPending] = useState<ServiceId | null>(null);
   const [notice, setNotice] = useState("");
 
-  async function change(id: ServiceId, scenario?: Scenario) {
+  async function change(id: ServiceId, scenario?: number) {
     setPending(id);
-    setNotice("");
+    setNotice(scenario ? "Deploying the change…" : "Restoring…");
     try {
-      const response = await fetch(`/api/v1/demo/outages/${id}`, {
+      const response = await fetch(`/api/v1/demo/bad-deploys/${id}`, {
         method: scenario ? "POST" : "DELETE",
         headers: scenario ? { "Content-Type": "application/json" } : undefined,
         body: scenario ? JSON.stringify({ scenario }) : undefined,
       });
       if (!response.ok) {
-        setNotice("Could not change the demo outage. Check that the apps and uptime API are running from this checkout.");
+        setNotice((await errorMessage(response)) ?? "Could not change the demo outage. Check the uptime API log.");
         return;
       }
-      setNotice(scenario ? "Outage requested. Waiting for the next status check." : "Recovery requested. Waiting for the next status check.");
+      if (!scenario) {
+        // Also clear any outage left by the earlier flag-file controls.
+        await fetch(`/api/v1/demo/outages/${id}`, { method: "DELETE" }).catch(() => undefined);
+      }
+      setNotice(
+        scenario
+          ? "Deployed. The next status check will catch the outage, then the AI agent investigates and opens a fix PR."
+          : "Restored. Waiting for the next status check.",
+      );
       onChange();
       window.setTimeout(onChange, 1800);
     } catch {
@@ -64,7 +82,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         </span>
         <div className="min-w-0 flex-1">
           <h2 id="outage-controls-title" className="text-sm font-semibold">Demo outage controls</h2>
-          <p className="mt-0.5 text-xs text-muted">Change a local app, then watch its monitored status update. Restore it when finished.</p>
+          <p className="mt-0.5 text-xs text-muted">Ship a bad deploy to an app, then watch the AI agent find and fix it. Restore it when finished.</p>
         </div>
       </div>
       <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
