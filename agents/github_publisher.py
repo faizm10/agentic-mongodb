@@ -33,6 +33,7 @@ How duplicates are prevented
 from __future__ import annotations
 
 import logging
+import os
 import re
 import time
 from typing import Optional, Union
@@ -108,8 +109,12 @@ class PullRequestPublisher:
         *,
         max_attempts: int = 3,
         retry_delay: float = 2.0,
+        draft: Optional[bool] = None,
     ):
         self.client = client or get_client()
+        # Draft by default so a person must mark it ready; GITHUB_DRAFT_PRS=false opts out.
+        self.draft = (os.getenv("GITHUB_DRAFT_PRS", "true").strip().lower() not in ("0", "false", "no")
+                      if draft is None else draft)
         self.max_attempts = max(2, max_attempts)    # one attempt to write, one to confirm
         self.retry_delay = retry_delay
 
@@ -321,7 +326,7 @@ class PullRequestPublisher:
                 steps.append(f"PR #{pr.number} found{note}")
                 return pr
             try:
-                pr = self.client.create_pr(branch, self._title(req), self._body(req))
+                pr = self.client.create_pr(branch, self._title(req), self._body(req), draft=self.draft)
                 steps.append(f"opened PR #{pr.number}")
                 return pr
             except GitHubUnavailable:
@@ -391,9 +396,20 @@ class PullRequestPublisher:
         )
 
     def _title(self, req: PublishRequest) -> str:
+        if req.title.strip():
+            return self._one_line(req.title, 120)
         what = self._one_line(req.summary or req.root_cause, 70) or "automated fix"
         app = f"{req.application}: " if req.application else ""
         return f"[OpsRelay] {app}{what} (incident {req.incident_id})"
+
+    @staticmethod
+    def _notes_block(req: PublishRequest) -> str:
+        notes = (req.context_notes or "").strip().replace("<!--", "").replace("-->", "")
+        if not notes:
+            return ""
+        if len(notes) > 3000:
+            notes = notes[:3000] + "\n[... truncated ...]"
+        return f"## Context from OpsRelay memory\n\n{notes}\n\n"
 
     def _body(self, req: PublishRequest) -> str:
         files = "\n".join(f"- `{f.path}`" for f in req.files)
@@ -417,6 +433,7 @@ class PullRequestPublisher:
             "## Test results\n\n"
             "Tests passed in an isolated environment before this PR was opened."
             f"{test_block}\n"
+            f"{self._notes_block(req)}"
             f"<!-- opsrelay-incident: {req.incident_id} -->\n"
         )
 

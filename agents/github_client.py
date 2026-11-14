@@ -586,13 +586,21 @@ class GitHubClient:
                 return self._pr_from(item)
         return None
 
-    def create_pr(self, branch: str, title: str, body: str) -> PullRequestInfo:
-        data = self._request(
-            "POST",
-            f"{self._repo}/pulls",
-            json={"title": title, "head": branch, "base": self.config.base_branch, "body": body},
-        ).json()
-        return self._pr_from(data)
+    def create_pr(self, branch: str, title: str, body: str, draft: bool = False) -> PullRequestInfo:
+        """Open a PR. With ``draft=True`` it is opened as a draft; repositories that do not
+        support drafts answer 422 mentioning "draft", and we then open a normal PR (the
+        agent still never merges anything itself)."""
+        payload = {"title": title, "head": branch, "base": self.config.base_branch, "body": body}
+        if draft:
+            try:
+                return self._pr_from(
+                    self._request("POST", f"{self._repo}/pulls", json={**payload, "draft": True}).json()
+                )
+            except GitHubValidationError as exc:
+                if "draft" not in str(exc).lower():
+                    raise
+                log.warning("repository does not support draft PRs; opening a normal PR")
+        return self._pr_from(self._request("POST", f"{self._repo}/pulls", json=payload).json())
 
     def get_pr(self, number: int) -> PullRequestInfo:
         return self._pr_from(self._get_json(f"{self._repo}/pulls/{number}"))
@@ -645,5 +653,5 @@ def find_pr(branch: str) -> Optional[PullRequestInfo]:
     return get_client().find_pr(branch)
 
 
-def create_pr(branch: str, title: str, body: str) -> PullRequestInfo:
-    return get_client().create_pr(branch, title, body)
+def create_pr(branch: str, title: str, body: str, draft: bool = False) -> PullRequestInfo:
+    return get_client().create_pr(branch, title, body, draft)
