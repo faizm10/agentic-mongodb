@@ -32,7 +32,7 @@ from .support import StubLLM, _git, candidate, diagnosis_draft, patch_draft
 REPO_ROOT = Path(__file__).resolve().parents[2]
 REPO = "faizm10/agentic-mongodb"
 PRICING = "shopping/backend/app/pricing.py"
-UNCOVERING = ["test_discounts.py", "test_checkout_api.py", "test_health_and_catalog.py"]
+UNCOVERING = ["test_discounts.py", "test_checkout_api.py", "test_health_and_catalog.py", "test_demo_outages.py"]
 
 REGRESSION_TEST = '''"""Regression test written by OpsRelay for the live checkout probe failure."""
 

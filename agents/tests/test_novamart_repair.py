@@ -96,5 +96,5 @@ def test_injected_discount_bug_is_repaired_and_verified(novamart, monkeypatch):
     assert "-" + bug.buggy.rstrip("\n") in result["diff"]
     assert "+" + bug.original.rstrip("\n") in result["diff"]
     assert bug.original in result["files"][PRICING]
-    assert "85 passed" in result["test_output"]
+    assert "88 passed" in result["test_output"]
     print(f"\nCI log tail:\n{ci_log.strip().splitlines()[-1]}\npatch:\n{result['diff']}\n{result['test_output']}")
