@@ -306,7 +306,7 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 
 ## Demo outage controls
 
-Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is.
+Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is. One NovaMart control is different: **Payments failing (Stripe down)** simulates a payment-provider outage. It ships no code; the checkout probe reports the Stripe API as an `external:` dependency, and the agent records that there is no code fix instead of opening a PR.
 
 Shipping one commits the bug on top of `origin/main` with a routine-looking message and **pushes it to `main`**, then applies the same change to the running checkout so the dev servers serve it. Your current branch, index and other files are not touched; the commit is built in a temporary index. The checkout probe fails within one cycle, the AI agent picks up the incident, reproduces it with the app's tests, and opens a draft fix PR against `main`. The CI run that fails on the same commit is skipped while the live incident covers it, so you get one PR.
 

@@ -43,6 +43,12 @@ SERVICE_HEALTH_STEPS = [
     "Check network and host health between the monitor and the service.",
 ]
 
+PROVIDER_STEPS = [
+    "Check the provider's status page and confirm the outage and its expected recovery time.",
+    "Tell customers the feature is affected; there is no code fix to merge.",
+    "The uptime monitor resolves the incident when the provider recovers and the next probe passes.",
+]
+
 
 # Recovery for an uptime incident is the monitor's next passing check, not the agent's word.
 APPROVAL_STEPS = [
@@ -101,6 +107,13 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
                   f"(process, deployment or network), not a code bug, so no code change was attempted")
         return _needs_review(reason, live.get("summary") or reason,
                              _markdown(live, reason, None, SERVICE_HEALTH_STEPS))
+
+    failures = live.get("probe_failures") or []
+    if failures and all(str(f.get("source") or "").startswith("external:") for f in failures):
+        external = sorted({str(f["source"]).removeprefix("external:").strip() for f in failures})
+        reason = (f"{title}: the failing check is a third-party dependency ({', '.join(external)}), "
+                  f"not {app.name} code, so no code change was attempted")
+        return _needs_review(reason, f"{', '.join(external)} outage", _markdown(live, reason, None, PROVIDER_STEPS))
 
     source_files = repairer._source_files(sha, app)
     incident = LiveIncident(

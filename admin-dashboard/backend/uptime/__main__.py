@@ -16,6 +16,7 @@ import logging
 import os
 import signal
 import sys
+from pathlib import Path
 
 from .config import load_settings
 from .storage import open_storage
@@ -39,6 +40,20 @@ async def _run_worker() -> None:
     await monitor.run_forever(stop)
 
 
+def serve_app():
+    """API with the monitoring worker embedded (``python -m uptime serve``)."""
+    from .api import create_app
+
+    return create_app(embed_worker=True)
+
+
+def api_app():
+    """Read API only (``python -m uptime api``)."""
+    from .api import create_app
+
+    return create_app(embed_worker=False)
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m uptime", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="cmd", required=True)
@@ -46,6 +61,7 @@ def main(argv: list[str] | None = None) -> int:
         p = sub.add_parser(name)
         p.add_argument("--host", default=os.environ.get("OPSRELAY_API_HOST", "127.0.0.1"))
         p.add_argument("--port", type=int, default=int(os.environ.get("OPSRELAY_API_PORT", "8300")))
+        p.add_argument("--reload", action="store_true", help="restart when uptime/ code changes (development)")
     sub.add_parser("worker")
     sub.add_parser("check")
     sub.add_parser("status")
@@ -56,9 +72,11 @@ def main(argv: list[str] | None = None) -> int:
     if args.cmd in ("serve", "api"):
         import uvicorn
 
-        from .api import create_app
-
-        uvicorn.run(create_app(embed_worker=args.cmd == "serve"), host=args.host, port=args.port, log_level="warning")
+        # An import string lets uvicorn's reloader re-create the app after a code change.
+        # Only uptime/ is watched: demo bad deploys edit the apps' source, not this API.
+        uvicorn.run(f"uptime.__main__:{args.cmd}_app", factory=True, host=args.host, port=args.port,
+                    log_level="warning", reload=args.reload,
+                    reload_dirs=[str(Path(__file__).resolve().parent)] if args.reload else None)
         return 0
     if args.cmd == "worker":
         asyncio.run(_run_worker())

@@ -14,6 +14,7 @@ Run from the command line (exit code 1 when unhealthy):
 from __future__ import annotations
 
 import json
+import re
 import sys
 import time
 from datetime import datetime, timezone
@@ -51,6 +52,10 @@ GOLDEN_CART = {
     "tax_cents": 742,
     "total_cents": 9_740,
 }
+
+
+# Imgix-style CDN path for a photo id, e.g. https://images.unsplash.com/photo-1505740420928-5e560c06d30e
+IMAGE_URL = re.compile(r"^https://images\.unsplash\.com/photo-\d+-[0-9a-f]+$")
 
 
 class _CheckFailed(Exception):
@@ -171,7 +176,44 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
 
     check("catalog_integrity", "catalog", "backend/app/catalog.py", catalog_check)
 
-    # 6. Order store (read-only) --------------------------------------------
+    # 6. Product images ------------------------------------------------------
+    def image_check() -> dict[str, Any]:
+        images = {p.id: p.image for p in service.catalog.products}
+        images.update({f"category:{c.slug}": c.image for c in service.catalog.categories})
+        broken = sorted(k for k, url in images.items() if not IMAGE_URL.match(url))
+        expected = {"images_checked": len(images), "broken_image_links": 0}
+        actual = {"images_checked": len(images), "broken_image_links": len(broken)}
+        if broken:
+            raise _CheckFailed(
+                f"{len(broken)} of {len(images)} product images point to a URL the image CDN cannot serve "
+                f"(e.g. {images[broken[0]]}).",
+                expected,
+                actual,
+            )
+        return {"expected": expected, "actual": actual}
+
+    check("product_images", "catalog", "backend/app/catalog.py", image_check)
+
+    # 7. Stock levels shown to shoppers -------------------------------------
+    def stock_check() -> dict[str, Any]:
+        shown = service.availability(sold={})
+        expected = {p.id: p.stock for p in service.catalog.products}
+        wrong = sorted(k for k in expected if shown.get(k) != expected[k])
+        in_stock = sum(1 for v in expected.values() if v > 0)
+        summary_expected = {"products_in_stock": in_stock}
+        summary_actual = {"products_in_stock": sum(1 for k in expected if shown.get(k, 0) > 0)}
+        if wrong:
+            raise _CheckFailed(
+                f"With nothing sold, {len(wrong)} products report the wrong stock level "
+                f"(e.g. {wrong[0]}: {shown.get(wrong[0])} instead of {expected[wrong[0]]}).",
+                summary_expected,
+                summary_actual,
+            )
+        return {"expected": summary_expected, "actual": summary_actual}
+
+    check("stock_levels", "inventory", "backend/app/checkout.py::CheckoutService.availability", stock_check)
+
+    # 8. Order store (read-only) --------------------------------------------
     def store_check() -> dict[str, Any]:
         health = store.health()
         _expect(
@@ -183,7 +225,7 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
 
     check("order_store_access", "orders", "backend/app/store.py::DemoStore", store_check)
 
-    # 7. Side-effect verification -------------------------------------------
+    # 9. Side-effect verification -------------------------------------------
     orders_after = store.order_count()
     mtime_after = store.path.stat().st_mtime_ns if store.path.exists() else None
     side_effects = {
@@ -206,7 +248,17 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
     # The demo controls affect real customer requests. Report their state through
     # the same functional endpoint so the uptime worker detects the outage.
     active_mode = demo_outage.mode(store.data_dir)
-    if active_mode:
+    if active_mode == "payment":
+        # Checkout calls the payment provider last; report its outage as an external dependency.
+        checks.append({
+            "name": "payment_provider", "component": "payments", "source": "external: Stripe API",
+            "status": "fail",
+            "message": "Stripe API is unavailable (HTTP 503 from api.stripe.com). Card payments cannot be processed; "
+                       "this is a provider outage, not a NovaMart code change.",
+            "expected": {"stripe_api": "available"}, "actual": {"stripe_api": "503 Service Unavailable"},
+            "duration_ms": 0.0,
+        })
+    elif active_mode:
         checks.append({
             "name": "customer_flow", "component": "storefront", "source": "backend/app/main.py",
             "status": "fail", "message": "A customer-facing flow is unavailable.",
@@ -216,7 +268,7 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
     failures = [c for c in checks if c["status"] == "fail"]
     return {
         "probe": "checkout",
-        "demo_outage": bool(active_mode),
+        "demo_outage": bool(active_mode) and active_mode != "payment",
         "status": "unhealthy" if failures else "healthy",
         "summary": f"{len(checks) - len(failures)}/{len(checks)} checks passed",
         "checked_at": datetime.now(timezone.utc).isoformat(),

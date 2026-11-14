@@ -124,7 +124,9 @@ class CheckoutService:
             inventory.ensure_available(quote.requested, availability)
 
             if demo_outage.mode(self.store.data_dir) == "payment":
-                raise PaymentUnavailableError("Payment processing is temporarily unavailable.")
+                raise PaymentUnavailableError(
+                    "Our payment provider (Stripe) is not responding. Your card was not charged; please try again shortly."
+                )
 
             now = self.clock()
             order = self._build_order(quote, now, customer, shipping_address)

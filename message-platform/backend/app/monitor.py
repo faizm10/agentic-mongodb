@@ -72,16 +72,43 @@ def _probe_db() -> tuple[sqlite3.Connection, ProbeClock]:
 
 # ----------------------------------------------------------------------- checks
 def check_send_and_receive() -> dict[str, Any]:
+    """Sending and receiving are checked separately so the evidence says which side broke."""
     conn, clock = _probe_db()
-    sent, created = messages.send_message(
-        conn, conversation_id="probe_dm", sender_id="probe_ana", body="probe: hello", now=clock(),
-        idempotency_key="probe-send-1",
-    )
-    expect(created, True, "A new message must be created.")
-    history = messages.list_history(conn, "probe_dm", "probe_ben")
-    expect([m["body"] for m in history], ["probe: hello"], "Recipient must receive exactly the sent message.")
-    expect(history[0]["id"], sent["id"], "Recipient history must contain the stored message id.")
-    return {"rule": "send/receive", "message_id": sent["id"]}
+    sent_id, send_error = None, None
+    try:
+        sent, created = messages.send_message(
+            conn, conversation_id="probe_dm", sender_id="probe_ana", body="probe: hello", now=clock(),
+            idempotency_key="probe-send-1",
+        )
+        sent_id = sent["id"] if created else None
+    except MessagingError as exc:
+        send_error = f"{exc.code}: {exc.message}"
+    if sent_id is None:
+        # Seed the message directly so receiving is still tested when sending is broken.
+        sent_id = "probe_seeded_msg"
+        with conn:
+            conn.execute(
+                "INSERT INTO messages(id, conversation_id, sender_id, body, idempotency_key, reply_to_id, created_at) "
+                "VALUES (?,?,?,?,?,?,?)",
+                (sent_id, "probe_dm", "probe_ana", "probe: hello", None, None, db.iso(clock())),
+            )
+            conn.execute("INSERT INTO receipts(message_id, user_id, status) VALUES (?,?,?)",
+                         (sent_id, "probe_ben", status.SENT))
+    receive_error = None
+    try:
+        history = messages.list_history(conn, "probe_dm", "probe_ben")
+        received = [m["id"] for m in history] == [sent_id]
+        if not received:
+            receive_error = f"recipient's history held {len(history)} messages instead of the sent one"
+    except MessagingError as exc:
+        received, receive_error = False, f"{exc.code}: {exc.message}"
+    actual = {"message_sent": send_error is None, "message_received": received}
+    expected = {"message_sent": True, "message_received": True}
+    if actual != expected:
+        broken = [side for side, ok in (("sending", actual["message_sent"]), ("receiving", received)) if not ok]
+        errors = "; ".join(e for e in (send_error, receive_error) if e)
+        raise CheckFailed(f"Message {' and '.join(broken)} failed ({errors}).", expected=expected, actual=actual)
+    return {"rule": "send/receive", "message_id": sent_id}
 
 
 def check_idempotent_retry() -> dict[str, Any]:

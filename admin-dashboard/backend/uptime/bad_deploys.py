@@ -5,6 +5,9 @@ single-line change on top of ``origin/<branch>`` and pushes it, like a bad deplo
 applies the same change to the running checkout (the dev servers reload on save). The
 uptime probe catches it, and the agent fixes the pushed commit and opens a PR.
 
+A ``provider:`` scenario is a third-party outage instead (the payment provider is down):
+it flips the app's demo outage flag and ships no code, so the agent has nothing to fix.
+
 Restore applies the reverse change to the checkout and, if the bug is still on the
 branch (the agent's PR was not merged yet), pushes a revert commit.
 
@@ -25,13 +28,14 @@ import threading
 from pathlib import Path
 from typing import Any
 
+from . import demo_outages
 from .demo_outages import repo_root
 
 APPS = {"novamart": "shopping", "novaconnect": "message-platform"}
 # The dashboard sends a scenario number, so nothing it shows or sends names the bug.
 SCENARIOS = {
-    "novamart": ("quantity", "discount", "inventory"),
-    "novaconnect": ("duplicate", "status", "ordering"),
+    "novamart": ("images", "provider:payment", "stock"),
+    "novaconnect": ("send", "receive", "both"),
 }
 # Bland, like a routine cleanup: neither the agent nor an audience should learn where
 # the bug is from the commit message.
@@ -42,6 +46,11 @@ COMMIT_MESSAGES = {
     "duplicate": "Tidy up messaging backend",
     "status": "Clean up conversation code",
     "ordering": "Refactor message helpers",
+    "images": "Tidy up catalog constants",
+    "stock": "Simplify availability lookup",
+    "send": "Tidy up message sending",
+    "receive": "Clean up history query",
+    "both": "Refactor participant lookup",
 }
 GIT_TIMEOUT = 60
 _lock = threading.Lock()
@@ -85,10 +94,16 @@ def ship(service_id: str, scenario: int) -> None:
         if not 1 <= scenario <= len(keys):
             raise ValueError("Unsupported bad deploy")
         bug_key = keys[scenario - 1]
-        bug = catalog(service_id)[bug_key]
         state = _load_state()
         if service_id in state:
             raise BadDeployError("A bad deploy is already live for this app. Restore it first.")
+        if bug_key.startswith("provider:"):
+            outage = bug_key.removeprefix("provider:")
+            demo_outages.activate(service_id, outage)
+            state[service_id] = {"outage": outage}
+            _save_state(state)
+            return
+        bug = catalog(service_id)[bug_key]
         path = f"{APPS[service_id]}/{bug.file}"
         local = repo_root() / path
         text = local.read_text(encoding="utf-8")
@@ -111,6 +126,11 @@ def restore(service_id: str) -> None:
         state = _load_state()
         entry = state.get(service_id)
         if entry is None:
+            return
+        if "outage" in entry:
+            demo_outages.clear(service_id)
+            del state[service_id]
+            _save_state(state)
             return
         bug = catalog(service_id)[entry["bug"]]
         path = f"{APPS[service_id]}/{bug.file}"

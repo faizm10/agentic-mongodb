@@ -45,7 +45,12 @@ export function AssistantChat() {
       });
       const body = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(body?.error?.message ?? "The assistant couldn't answer. Try again.");
+        setError(
+          body?.error?.message ??
+            (response.status === 404
+              ? "The running uptime API is older than this page and has no assistant. Restart ./dev.sh."
+              : "The assistant couldn't answer. Try again."),
+        );
         return;
       }
       setMessages([...next, { role: "assistant", content: body.data.reply }]);

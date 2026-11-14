@@ -4,7 +4,38 @@ type Failure = { check: string; reason: string; expected?: unknown; actual?: unk
 export type PlainRow = { label: string; expected: string; actual: string };
 export type PlainFailure = { title: string; explanation: string; rows: PlainRow[] };
 
-const CHECKS: Record<string, { title: string; explanation: string; money?: boolean }> = {
+type Shortage = [string, number, number]; // [product, requested, available]
+const isShortage = (v: unknown): v is Shortage =>
+  Array.isArray(v) && v.length === 3 && typeof v[1] === "number" && typeof v[2] === "number";
+
+/** Orders the shop should block (expected shortages) versus the ones it actually blocked. */
+function stockRows(expected: unknown, actual: unknown): PlainRow[] | null {
+  if (!Array.isArray(expected) || !Array.isArray(actual)) {
+    if (expected === "InsufficientStockError") {
+      return [{ label: "Ordering more than is in stock", expected: "Stopped", actual: "Went through" }];
+    }
+    return null;
+  }
+  if (!expected.every(isShortage) || !actual.every(isShortage)) return null;
+  const key = (s: Shortage) => s.join("|");
+  const blocked = new Set(actual.map(key));
+  const shouldBlock = new Set(expected.map(key));
+  return [
+    ...expected.filter((s) => !blocked.has(key(s))).map(([, want, have]) => ({
+      label: `Ordering ${want} when only ${have} ${have === 1 ? "is" : "are"} in stock`, expected: "Blocked", actual: "Allowed",
+    })),
+    ...actual.filter((s) => !shouldBlock.has(key(s))).map(([, want, have]) => ({
+      label: `Ordering ${want} when ${have} ${have === 1 ? "is" : "are"} in stock`, expected: "Allowed", actual: "Blocked",
+    })),
+  ];
+}
+
+const CHECKS: Record<string, {
+  title: string;
+  explanation: string;
+  money?: boolean;
+  rows?: (expected: unknown, actual: unknown) => PlainRow[] | null;
+}> = {
   // NovaMart
   quantity_line_totals: {
     title: "Prices are wrong when buying more than one",
@@ -24,13 +55,29 @@ const CHECKS: Record<string, { title: string; explanation: string; money?: boole
   inventory_oversell_guard: {
     title: "The shop allows ordering more than is in stock",
     explanation: "Customers should only be able to buy what is actually available.",
+    rows: stockRows,
   },
   catalog_integrity: { title: "The product list has problems", explanation: "Some products are missing or have bad details." },
+  product_images: {
+    title: "Product images aren't loading",
+    explanation: "The shop asks for its product photos at a web address that doesn't exist, so shoppers see empty boxes.",
+  },
+  stock_levels: {
+    title: "Everything shows as out of stock",
+    explanation: "Products that are in the warehouse show 0 left, so shoppers can't add them to their cart.",
+  },
+  payment_provider: {
+    title: "Payments are failing because Stripe is down",
+    explanation: "Stripe, the company that processes NovaMart's card payments, isn't responding. This is their outage, not a bug in our code, so there is nothing for the AI to fix. Customers' cards are not charged.",
+  },
   order_store_access: { title: "Orders can't be saved or read", explanation: "The shop can't reach the place it keeps orders." },
   customer_flow: { title: "A customer feature is switched off", explanation: "Part of the shop is unavailable to customers." },
   // NovaConnect
   database_reachable: { title: "Messages can't be stored", explanation: "The app can't reach the place it keeps messages." },
-  send_and_receive: { title: "Messages aren't getting through", explanation: "A test message was sent but didn't arrive." },
+  send_and_receive: {
+    title: "Messages aren't getting through",
+    explanation: "A test message is sent from one person to another. This shows which part broke: sending, receiving, or both.",
+  },
   idempotent_retry: {
     title: "Messages can arrive twice",
     explanation: "If a phone resends a message after a hiccup, it should still appear only once.",
@@ -54,7 +101,7 @@ const CHECKS: Record<string, { title: string; explanation: string; money?: boole
 const dollars = (cents: number) => `$${(cents / 100).toFixed(2)}`;
 
 function words(key: string): string {
-  const text = key.replace(/_cents$/, "").replace(/_/g, " ");
+  const text = key.replace(/_cents$/, "").replace(/_/g, " ").replace(/\bapi\b/g, "API");
   return text.charAt(0).toUpperCase() + text.slice(1);
 }
 
@@ -81,18 +128,23 @@ const isRecord = (v: unknown): v is Record<string, unknown> => typeof v === "obj
 export function plainFailure(f: Failure): PlainFailure {
   const known = CHECKS[f.check];
   const money = Boolean(known?.money);
-  let rows: PlainRow[] = [];
-  if (isRecord(f.expected) && isRecord(f.actual)) {
-    const actual = f.actual;
-    rows = Object.entries(f.expected)
-      .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(actual[k]))
-      .map(([k, v]) => ({ label: label(k, money), expected: value(v, money, k), actual: value(actual[k], money, k) }));
-  } else if (f.expected !== undefined || f.actual !== undefined) {
-    rows = [{ label: "Result", expected: value(f.expected, money), actual: value(f.actual, money) }];
-  }
+  const custom = known?.rows?.(f.expected, f.actual);
   return {
     title: known?.title ?? words(f.check),
     explanation: known?.explanation ?? f.reason,
-    rows,
+    rows: custom && custom.length > 0 ? custom : genericRows(f, money),
   };
+}
+
+function genericRows(f: Failure, money: boolean): PlainRow[] {
+  if (isRecord(f.expected) && isRecord(f.actual)) {
+    const actual = f.actual;
+    return Object.entries(f.expected)
+      .filter(([k, v]) => JSON.stringify(v) !== JSON.stringify(actual[k]))
+      .map(([k, v]) => ({ label: label(k, money), expected: value(v, money, k), actual: value(actual[k], money, k) }));
+  }
+  if (f.expected !== undefined || f.actual !== undefined) {
+    return [{ label: "Result", expected: value(f.expected, money), actual: value(f.actual, money) }];
+  }
+  return [];
 }

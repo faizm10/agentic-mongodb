@@ -21,6 +21,22 @@ type Handoff = Record<string, unknown> & {
   code_repair_candidate: boolean;
 };
 
+const AGENT_STATUS: Record<string, string> = {
+  open: "AI agent is working on it",
+  awaiting_merge: "Fix ready for review",
+  needs_review: "AI agent needs a person to help",
+  failed: "AI agent couldn't finish",
+  resolved: "Fix merged",
+  rejected: "Fix was turned down",
+};
+
+/** Which problem an agent run was for, in words: this outage, an earlier one, or a failed CI run. */
+function agentRunLabel(runId: string, incidentId: string): string {
+  if (runId.endsWith(`#${incidentId}`)) return "AI fix for this outage";
+  if (/#UPT-/.test(runId)) return "AI fix for an earlier outage";
+  return "AI fix for a failed automated test run";
+}
+
 const EVENT_LABEL: Record<string, string> = {
   opened: "Incident detected",
   escalated: "Escalated",
@@ -125,10 +141,10 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               </section>}
 
               <section className="panel p-6">
-                <h2 className="flex items-center gap-2 text-sm font-semibold"><Workflow className="h-4 w-4 text-muted" /> CI & repair links</h2>
+                <h2 className="flex items-center gap-2 text-sm font-semibold"><Workflow className="h-4 w-4 text-muted" /> Fixes</h2>
                 {i.links.length === 0 && i.related_ci.length === 0 ? (
                   <p className="mt-3 text-sm text-muted">
-                    No GitHub Actions run or repair PR is linked yet. The agents can attach one via the admin API.
+                    No fix has been started yet. The AI agent usually picks up a new problem within a minute.
                   </p>
                 ) : (
                   <ul className="mt-3 space-y-2 text-sm">
@@ -141,11 +157,12 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                       </li>
                     ))}
                     {i.related_ci.map((c) => (
-                      <li key={c.id} className="rounded-xl border border-line p-3 text-xs">
-                        <p className="font-mono text-faint">{c.id} · {c.status} · {c.stage}</p>
-                        <div className="mt-1 flex flex-wrap gap-3">
-                          {c.run_url && <a className="text-accent hover:underline" href={c.run_url} target="_blank" rel="noreferrer">GitHub Actions run</a>}
-                          {c.pr_url && <a className="text-accent hover:underline" href={c.pr_url} target="_blank" rel="noreferrer">Repair PR</a>}
+                      <li key={c.id} className="rounded-xl border border-line p-3 text-xs" title={`${c.id} · ${c.status} · ${c.stage}`}>
+                        <p className="text-sm font-medium text-ink">{agentRunLabel(c.id, i.id)}</p>
+                        <p className="mt-0.5 text-muted">{AGENT_STATUS[c.status] ?? c.status}</p>
+                        <div className="mt-1.5 flex flex-wrap gap-3">
+                          {c.pr_url && <a className="text-accent hover:underline" href={c.pr_url} target="_blank" rel="noreferrer">See the fix (PR)</a>}
+                          {c.run_url && <a className="text-accent hover:underline" href={c.run_url} target="_blank" rel="noreferrer">Test run on GitHub</a>}
                         </div>
                       </li>
                     ))}
