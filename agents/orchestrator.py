@@ -13,6 +13,11 @@ Guarantees
               the PR never produces a duplicate.
 * No replay - resume reads only the incident document's `stage`; the audit log in
               `workflow_steps` is for humans, not for recovery.
+* Sources   - CI incidents come from Hamza's monitor; live incidents (source="live")
+              come from Taha's uptime monitor via agents/intake.py. Both run the same stages.
+* Human     - PRs are drafts and are never merged by the agent. `check_reviews` watches
+  approval    them: merged -> status "resolved"; closed unmerged -> "rejected" and the
+              fix's memory is deactivated so it is never suggested again.
 
 Teammate contracts (duck-typed)
 -------------------------------
@@ -33,6 +38,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
 import socket
 import time
 import uuid
@@ -51,7 +57,8 @@ MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "3"))
 POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 
 FAILED_RUN_FIELDS = ("repo", "app", "run_id", "run_attempt", "commit_sha",
-                     "failed_logs", "failed_tests", "html_url", "head_branch")
+                     "failed_logs", "failed_tests", "html_url", "head_branch", "source", "live")
+PATCH_FIELDS = ("diff", "files", "changed_files", "summary", "root_cause", "added_tests", "investigation")
 
 
 class GitHub(Protocol):
@@ -80,8 +87,12 @@ def branch_for(inc: dict) -> str:
     """Deterministic repair branch - same incident always maps to the same branch.
 
     Uses Hamza's convention (agent/fix-<run_id>-<attempt>) so his monitor ignores
-    CI runs on the agent's own fix branches.
+    CI runs on the agent's own fix branches. Live incidents use their uptime id
+    (agent/fix-live-upt-novamart-20261114-171819).
     """
+    if inc.get("source") == m.SOURCE_LIVE:
+        slug = re.sub(r"[^a-z0-9-]+", "-", inc["live"]["uptime_incident_id"].lower()).strip("-")
+        return f"agent/fix-live-{slug}"[:90]
     return f"agent/fix-{inc['run_id']}-{inc['run_attempt']}"
 
 
@@ -118,6 +129,35 @@ def ingest_failed_run(run: dict, db: Database | None = None,
         m.log_step(iid, "detected", "completed", worker_id,
                    {"run_id": run["run_id"], "commit_sha": run["commit_sha"],
                     "html_url": run.get("html_url")}, db=db)
+    return iid, created
+
+
+def live_incident_id(repo: str, uptime_incident_id: str) -> str:
+    return f"{repo}#{uptime_incident_id}"
+
+
+def ingest_live_incident(repo: str, live: dict, commit_sha: str, db: Database | None = None,
+                         worker_id: str = "uptime-intake") -> tuple[str, bool]:
+    """Record a live incident from the uptime monitor exactly once. Returns (incident_id, created).
+
+    ``live`` is the uptime incident in Taha's handoff shape (see agents/intake.py) and
+    ``commit_sha`` the commit that was deployed when it was detected.
+    """
+    if not live.get("uptime_incident_id") or live.get("app") not in ("shopping", "messaging"):
+        raise ValueError("live incident needs uptime_incident_id and app shopping|messaging")
+    iid = live_incident_id(repo, live["uptime_incident_id"])
+    now = m.utcnow()
+    doc = {
+        "_id": iid, "source": m.SOURCE_LIVE, "repo": repo, "app": live["app"], "commit_sha": commit_sha,
+        "live": live, "status": m.STATUS_OPEN, "stage": "detected", "attempts": 0,
+        "created_at": now, "updated_at": now, "stages": {"detected": {"at": now, "by": worker_id}},
+    }
+    res = m.incidents(db).update_one({"_id": iid}, {"$setOnInsert": doc}, upsert=True)
+    created = res.upserted_id is not None
+    if created:
+        m.log_step(iid, "detected", "completed", worker_id,
+                   {"uptime_incident_id": live["uptime_incident_id"], "commit_sha": commit_sha,
+                    "route": live.get("investigation_route"), "title": live.get("title")}, db=db)
     return iid, created
 
 
@@ -255,8 +295,7 @@ class Orchestrator:
 
     def _repair(self, inc: dict) -> dict:
         result = self.repairer.repair(self._failed_run(inc), inc.get("similar", []))
-        patch = {k: result.get(k) for k in ("diff", "files", "changed_files", "summary",
-                                            "root_cause") if result.get(k) is not None}
+        patch = {k: result.get(k) for k in PATCH_FIELDS if result.get(k) is not None}
         verification = {"tests_passed": bool(result.get("tests_passed")),
                         "test_output": (result.get("test_output") or "")[-4000:],
                         "verified_at": m.utcnow()}
@@ -267,7 +306,8 @@ class Orchestrator:
                        {"tests_passed": False, "changed_files": patch.get("changed_files")},
                        db=self.db)
             print("  ✘ patch did not pass tests -> needs human review")
-            return self._finish(inc, m.STATUS_NEEDS_REVIEW, "patch failed verification")
+            reason = result.get("reason") or "patch failed verification"
+            return self._finish(inc, m.STATUS_NEEDS_REVIEW, f"patch failed verification: {reason}"[:2000])
         return self._advance(inc, "patch_verified",
                              {"patch": patch, "verification": verification},
                              {"tests_passed": True, "changed_files": patch.get("changed_files"),
@@ -277,7 +317,9 @@ class Orchestrator:
         intent = {
             "branch": branch_for(inc),
             "base_sha": inc["commit_sha"],
-            "title": f"[OpsRelay] Fix {inc['app']} CI failure (run {inc['run_id']})",
+            "title": (f"[OpsRelay] Fix {inc['app']} live incident: {inc['live'].get('title') or ''}"[:120]
+                      if inc.get("source") == m.SOURCE_LIVE
+                      else f"[OpsRelay] Fix {inc['app']} CI failure (run {inc['run_id']})"),
             "saved_at": m.utcnow(),
         }
         return self._advance(inc, "pr_intent_saved", {"pr_intent": intent},
@@ -327,8 +369,40 @@ class Orchestrator:
             self.run_incident(iid)
         return len(ids)
 
-    def run_forever(self, monitor, poll_seconds: int = POLL_SECONDS, live=None) -> None:
-        """CI failures (monitor) and, if given, live checks (LiveWatcher) every poll_seconds."""
+    # ---- human approval ------------------------------------------------- #
+    def check_reviews(self) -> list[tuple[str, str]]:
+        """Record what humans decided on the agent's PRs. Returns [(incident_id, new_status)].
+
+        Merged -> resolved (the fix's memory stays active). Closed without merge ->
+        rejected and the memory is deactivated. Open PRs are left alone. Status moves are
+        conditional on still being awaiting_merge, so concurrent workers record it once.
+        """
+        decided = []
+        for inc in m.incidents(self.db).find({"status": m.STATUS_AWAITING_MERGE, "pr_intent.branch": {"$exists": True}}):
+            pr = self.github.find_pr(inc["repo"], inc["pr_intent"]["branch"]) or {}
+            state = pr.get("state")
+            if state not in ("merged", "closed"):
+                continue
+            status = m.STATUS_RESOLVED if state == "merged" else m.STATUS_REJECTED
+            now = m.utcnow()
+            res = m.incidents(self.db).update_one(
+                {"_id": inc["_id"], "status": m.STATUS_AWAITING_MERGE},
+                {"$set": {"status": status, "review": {"pr_state": state, "recorded_at": now},
+                          "status_reason": f"PR #{pr.get('number')} {state} by a human", "updated_at": now}})
+            if not res.modified_count:
+                continue
+            if status == m.STATUS_REJECTED and inc.get("memory_id"):
+                memory.forget(inc["memory_id"], f"PR #{pr.get('number')} closed without merge", db=self.db)
+            m.log_step(inc["_id"], "review", "completed", self.worker_id,
+                       {"pr_number": pr.get("number"), "pr_state": state, "status": status}, db=self.db)
+            print(f"{'✔' if state == 'merged' else '✘'} {inc['_id']}: PR #{pr.get('number')} {state} -> {status}")
+            decided.append((inc["_id"], status))
+        return decided
+
+    def run_forever(self, monitor, poll_seconds: int = POLL_SECONDS, live=None,
+                    live_intake=None) -> None:
+        """CI failures (monitor), live incidents from the uptime monitor (live_intake) and,
+        if given, Mo's live checks (LiveWatcher), every poll_seconds."""
         print(f"OpsRelay worker {self.worker_id} starting; resuming incomplete incidents…")
         if live is not None:
             print(f"live checks every {poll_seconds}s: {', '.join(live.services)}")
@@ -338,7 +412,11 @@ class Orchestrator:
                 for run in monitor.poll_failed_runs():
                     iid, created = ingest_failed_run(run, db=self.db)
                     print(f"{'＋ new' if created else '· seen'} incident {iid}")
+                if live_intake is not None:
+                    for iid in live_intake.poll():
+                        print(f"＋ new live incident {iid}")
                 self.run_pending()
+                self.check_reviews()
             except Exception as e:  # noqa: BLE001 - keep the worker alive
                 print(f"[worker] loop error: {e}")
             if live is not None:
@@ -356,9 +434,11 @@ def _pr_fields(pr: dict) -> dict:
 def _pr_body(inc: dict) -> str:
     patch = inc.get("patch", {})
     similar = inc.get("similar", [])
+    trigger = (f"live incident `{inc['live']['uptime_incident_id']}` ({inc['live'].get('title') or ''})"
+               if inc.get("source") == m.SOURCE_LIVE
+               else f"failed CI run {inc.get('html_url') or inc['run_id']}")
     lines = [
-        f"Automated repair for failed CI run {inc.get('html_url') or inc['run_id']} "
-        f"on `{inc['commit_sha'][:7]}`.",
+        f"Automated repair for {trigger} on `{inc['commit_sha'][:7]}`.",
         "", f"**Root cause:** {patch.get('root_cause') or 'n/a'}",
         f"**Fix:** {patch.get('summary') or 'n/a'}",
         f"**Files:** {', '.join(patch.get('changed_files') or [])}",
@@ -482,6 +562,13 @@ def _build_real():
             MonitorAdapter(gh, FailureMonitor(gh)))
 
 
+def _live_intake(orch: Orchestrator):
+    from agents.intake import LiveIntake
+
+    cfg = orch.github.client.config
+    return LiveIntake(f"{cfg.owner}/{cfg.repo}", db=orch.db, base_branch=cfg.base_branch)
+
+
 def _github_or_none():
     try:
         from agents.github_client import GitHubClient
@@ -508,11 +595,13 @@ def main() -> None:
     p = argparse.ArgumentParser(prog="python -m agents.orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("setup", help="create collections, indexes, vector index")
-    sub.add_parser("worker", help="resume incomplete incidents, then poll forever "
+    sub.add_parser("worker", help="resume incomplete incidents, then poll CI + live incidents forever "
                                   "(+ live checks if OPSRELAY_LIVE_SERVICES is set)")
     lv = sub.add_parser("live", help="live checks only: open/update incidents, collect evidence")
     lv.add_argument("--once", action="store_true", help="one round of checks, then exit")
     sub.add_parser("resume", help="resume incomplete incidents once and exit")
+    sub.add_parser("intake", help="record new live incidents from the uptime monitor once and exit")
+    sub.add_parser("reviews", help="record merged / closed agent PRs once and exit")
     s = sub.add_parser("status", help="show an incident and its audit timeline")
     s.add_argument("incident_id")
     st = sub.add_parser("stop", help="kill switch for an incident")
@@ -526,7 +615,16 @@ def main() -> None:
         print("setup complete")
     elif a.cmd == "worker":
         orch, monitor = _build_real()
-        orch.run_forever(monitor, live=_build_live(orch.github.client))
+        intake_on = os.getenv("OPSRELAY_LIVE_INTAKE", "1").lower() not in ("0", "false", "no")
+        orch.run_forever(monitor, live=_build_live(orch.github.client),
+                          live_intake=_live_intake(orch) if intake_on else None)
+    elif a.cmd == "intake":
+        orch, _ = _build_real()
+        for iid in _live_intake(orch).poll():
+            print(f"＋ new live incident {iid}")
+    elif a.cmd == "reviews":
+        orch, _ = _build_real()
+        print(f"recorded {len(orch.check_reviews())} review decision(s)")
     elif a.cmd == "live":
         watcher = _build_live(_github_or_none(), required=True)
         while True:

@@ -10,8 +10,63 @@ live_incident.py  route a failed live check; confirm_recovery(); diagnose_incide
 verifier.py       failed commit in a temp copy: reproduce (x2) -> apply each candidate -> rerun
 investigator.py   CI log / live probe + service logs + reproduction + diff + source -> grounded Diagnosis
 patcher.py        Diagnosis (+ failed attempts) -> up to 3 minimal diffs, scope-checked; Repairer for Mo
+intake.py         new uptime incidents (Taha's monitor) -> live incidents in Mo's incidents table
+live_repair.py    Repairer's live path: service health vs code, evidence gathering, PR investigation text
+regression.py     writes + proves a new regression test when the existing suite misses a live bug
 pipeline.py       repair_ci_failure()
 ```
+
+## Incident agent (end to end)
+
+When Shopping or Messaging breaks, the agent investigates, writes a tested fix and opens a
+**draft PR that a person must approve**. It never merges anything itself.
+
+```
+Taha's uptime monitor ──> uptime_incidents ──> intake.py ──> incidents table (source="live")
+Hamza's CI monitor  ──────────────────────────────────────> incidents table (CI run)
+                                                                │  Mo's orchestrator, crash-safe stages
+                                                                ▼
+         Repairer (this module): deep dive with OpenAI -> reproduce -> fix -> verify
+                                                                │  only verified fixes go on
+                                                                ▼
+         Hamza's publisher: branch agent/fix-... + DRAFT PR (evidence, tests, investigation)
+                                                                │  a human reviews on GitHub
+                                                                ▼
+         check_reviews: merged -> "resolved"   closed -> "rejected" (fix memory switched off)
+```
+
+**What the deep dive does for a live incident** (`live_repair.py`):
+
+1. **Service down, timing out or returning errors:** no AI call and no code change. The
+   incident goes to a person with a checklist.
+2. **Up but a business check fails** (e.g. checkout totals wrong):
+   - The agent gathers the failing probe checks, including the app's own hint of which
+     function is wrong, plus the last commits that touched the app, the source and related tests.
+   - OpenAI diagnoses. Every piece of evidence must be quoted word for word from those inputs.
+     A misquoted diagnosis gets one retry and is otherwise rejected.
+3. **Reproduce:**
+   - If the app's tests fail at the deployed commit, that failure is the reproduction.
+   - If they all pass, the tests miss the bug. The agent writes a new
+     `tests/test_opsrelay_*.py`. It is accepted only if it fails on the deployed code with an
+     assertion error, on every rerun, and the rest of the suite still passes.
+4. **Fix:** up to 3 small candidate fixes. The smallest one that makes the failing tests and
+   the whole suite pass wins. The new test ships in the PR next to the fix.
+5. **Anything uncertain** becomes `needs_review` with the reason and the next thing to check.
+
+**Run it** (needs `MONGODB_URI`, `OPENAI_API_KEY`, `GITHUB_TOKEN`, `GITHUB_OWNER` in `.env`):
+
+```bash
+python -m agents.orchestrator setup     # once: collections, indexes, vector index
+python -m agents.orchestrator worker    # forever: CI + live intake, deep dive, PRs, review tracking
+# one-shot steps, handy for demos:
+python -m agents.orchestrator intake    # record new uptime incidents
+python -m agents.orchestrator resume    # work every open incident
+python -m agents.orchestrator reviews   # record merged / closed agent PRs
+python -m agents.orchestrator list
+```
+
+Set `OPSRELAY_LIVE_INTAKE=0` to run the worker on CI failures only. The uptime monitor must
+use MongoDB storage (it does whenever `MONGODB_URI` is set) and the same `MONGODB_DB`.
 
 ## How it gets to a precise fix
 

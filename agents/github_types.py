@@ -231,6 +231,8 @@ class PublishRequest(_Serializable):
     workflow_url: str = ""
     title: str = ""             # optional PR title chosen by the caller (else generated)
     context_notes: str = ""     # optional markdown appended to the PR body (e.g. similar past incidents)
+    investigation: str = ""     # optional markdown: what the agent found and why (diagnosis, evidence)
+    new_files: list[str] = field(default_factory=list)  # agent-added regression tests (see publisher)
 
     @classmethod
     def from_dict(
@@ -274,6 +276,8 @@ class PublishRequest(_Serializable):
             workflow_url=workflow_url or d.get("workflow_url", ""),
             title=title or d.get("title", ""),
             context_notes=context_notes or d.get("context_notes", ""),
+            investigation=d.get("investigation") or "",
+            new_files=list(d.get("added_tests") or d.get("new_files") or []),
         )
 
     @classmethod
@@ -295,6 +299,7 @@ class PublishRequest(_Serializable):
             test_summary=suite.get("output_tail", ""),
             diff=data.get("patch") or "",
             workflow_url=workflow_url,
+            new_files=list(data.get("added_tests") or []),
         )
 
 

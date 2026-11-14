@@ -64,6 +64,9 @@ log = logging.getLogger("agents.publisher")
 _INCIDENT_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,80}$")
 _SHA_RE = re.compile(r"^[0-9a-f]{7,40}$")
 FORBIDDEN_PREFIXES = (".git/", ".github/")   # the agent may never edit CI or git internals
+# The only files a patch may CREATE: regression tests the repair agent wrote and verified
+# (they fail on the base commit and pass with the fix). Everything else is an in-place edit.
+NEW_TEST_FILE_RE = re.compile(r"^(?:shopping|message-platform)/(?:[a-z0-9_-]+/)*tests/test_opsrelay_[a-z0-9_]+\.py$")
 MAX_TEST_SUMMARY_CHARS = 3000
 
 
@@ -96,9 +99,14 @@ def validate_request(req: PublishRequest) -> Optional[str]:
             return f"unsafe or invalid path in patch: {path!r}"
         if path in seen:
             return f"duplicate path in patch: {path!r}"
+        if path in req.new_files and not NEW_TEST_FILE_RE.match(path):
+            return f"only agent regression tests (tests/test_opsrelay_*.py) may be created, not {path!r}"
         if not isinstance(f.content, str):
             return f"content of {path!r} must be text"
         seen.add(path)
+    unknown = sorted(set(req.new_files) - seen)
+    if unknown:
+        return f"new_files not in the patch: {unknown}"
     return None
 
 
@@ -213,13 +221,17 @@ class PullRequestPublisher:
             raise PublishRejected(f"base commit {req.base_sha[:7]} does not exist in the repository")
 
         current = self._read_files(req.base_sha, paths)
-        missing = [p for p, f in current.items() if f is None]
+        missing = [p for p, f in current.items() if f is None and p not in req.new_files]
         if missing:
             raise PublishRejected(
                 f"patch targets file(s) that do not exist at base commit {req.base_sha[:7]}: "
                 f"{missing} (only in-place edits are supported)"
             )
-        if all(current[f.path].content == f.content for f in req.files):  # type: ignore[union-attr]
+        clashing = [p for p in req.new_files if current.get(p) is not None]
+        if clashing:
+            raise PublishRejected(f"new test file(s) already exist at {req.base_sha[:7]}: {clashing}")
+        if all(current[f.path] is not None and current[f.path].content == f.content  # type: ignore[union-attr]
+               for f in req.files):
             raise PublishRejected("patch does not change any file at the base commit")
 
         base_head = self.client.get_branch(base_branch)
@@ -282,13 +294,14 @@ class PullRequestPublisher:
                 raise PublishRejected(f"branch {branch} does not exist")
 
             current = self._read_files(head.sha, paths)
-            missing = [p for p, f in current.items() if f is None]
+            missing = [p for p, f in current.items() if f is None and p not in req.new_files]
             if missing:
                 raise PublishRejected(
                     f"patch targets file(s) that do not exist on {branch}: {missing} "
                     "(only in-place edits are supported)"
                 )
-            if all(current[f.path].content == f.content for f in req.files):  # type: ignore[union-attr]
+            if all(current[f.path] is not None and current[f.path].content == f.content  # type: ignore[union-attr]
+                   for f in req.files):
                 steps.append(f"branch {branch} contains the patch at {head.sha[:7]}")
                 return head.sha
 
@@ -411,6 +424,23 @@ class PullRequestPublisher:
             notes = notes[:3000] + "\n[... truncated ...]"
         return f"## Context from OpsRelay memory\n\n{notes}\n\n"
 
+    @staticmethod
+    def _investigation_block(req: PublishRequest) -> str:
+        text = (req.investigation or "").strip().replace("<!--", "").replace("-->", "")
+        if not text:
+            return ""
+        if len(text) > 6000:
+            text = text[:6000] + "\n[... truncated ...]"
+        return f"## Investigation\n\n{text}\n\n"
+
+    @staticmethod
+    def _new_tests_note(req: PublishRequest) -> str:
+        if not req.new_files:
+            return ""
+        names = ", ".join(f"`{p}`" for p in req.new_files)
+        return (f"New regression test(s) {names} were written by the agent: they fail on the base "
+                "commit and pass with this fix. Review them like any other test.\n\n")
+
     def _body(self, req: PublishRequest) -> str:
         files = "\n".join(f"- `{f.path}`" for f in req.files)
         run = f"[GitHub Actions run]({req.workflow_url})" if req.workflow_url else "n/a"
@@ -428,8 +458,10 @@ class PullRequestPublisher:
             f"| Base commit | `{req.base_sha[:12]}` |\n"
             f"| CI run | {run} |\n\n"
             f"## Root cause\n\n{req.root_cause or 'n/a'}\n\n"
+            f"{self._investigation_block(req)}"
             f"## Proposed fix\n\n{req.summary or 'n/a'}\n\n"
             f"Files changed:\n{files}\n\n"
+            f"{self._new_tests_note(req)}"
             "## Test results\n\n"
             "Tests passed in an isolated environment before this PR was opened."
             f"{test_block}\n"

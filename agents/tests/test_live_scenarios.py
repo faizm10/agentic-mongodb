@@ -8,6 +8,7 @@ Run with -s to see each scenario's result:
 from agents import diagnose_incident
 from agents.live_check import load_service_config, run_live_check
 from agents.live_incident import LiveIncident, confirm_recovery
+from agents.regression import _RegressionTestDraft
 
 from .messaging_support import (
     STORE_BUGGY,
@@ -138,13 +139,25 @@ def test_code_bug_claim_that_tests_cannot_reproduce_needs_review(messaging, depl
     claim = code_bug_draft(evidence=[_EvidenceDraft(
         source="service_logs", reference="service_logs", excerpt="delivery queue paused", supports="x")])
 
-    result = diagnose_incident(incident(messaging, check, messaging.good_sha, logs=service.logs()),
-                               messaging_llm(claim))
+    llm = messaging_llm(claim)
+    # The model's regression test passes on the deployed code: the claimed bug isn't there.
+    llm.responses["_RegressionTestDraft"] = _RegressionTestDraft(
+        outcome="test", slug="probe_reaches_recipient", asserts="probe lands in the recipient inbox",
+        review_reason=None, content=(
+            "from messaging.store import MessageStore\n\n\n"
+            "def test_probe_reaches_recipient():\n"
+            "    store = MessageStore()\n"
+            "    store.send(\"probe-sender\", \"opsrelay-probe\", \"x\")\n"
+            "    assert len(store.inbox(\"opsrelay-probe\")) == 1\n"))
+
+    result = diagnose_incident(incident(messaging, check, messaging.good_sha, logs=service.logs()), llm)
 
     assert result.outcome == "needs_review" and result.route == "investigate"
-    assert "test suite passes" in result.reason and "not reproduced" in result.reason
+    assert "test suite passes" in result.reason
+    assert "passes on the current code, so it does not reproduce the bug" in result.reason
     assert result.next_diagnostic.startswith("Write a pytest regression test")
     assert "3 passed" in result.reproduction
+    assert llm.count("_RegressionTestDraft") == 2 and llm.count("_PatchDraft") == 0
 
 
 def test_delivery_failure_without_deployed_commit_asks_for_it(messaging, deploy):

@@ -95,3 +95,16 @@ def test_sandbox_env_drops_credentials(tmp_path, monkeypatch):
         "PYTHONHASHSEED", "PYTHONNOUSERSITE", "NO_COLOR",
     }
     assert env["HOME"].startswith(str(tmp_path))
+
+
+def test_parametrize_ids_with_symbols_are_accepted_but_paths_and_options_are_not():
+    from agents.verifier import _validate_node_ids
+
+    app = load_app_config("shopping")
+    good, bad = _validate_node_ids([
+        "tests/test_a.py::test_x[WELCOME10@20000-10-20000-2000]",
+        "tests/test_a.py::TestK::test_y[a=1,b/2]",
+        "-p", "tests/../x.py", "tests/test_a.py::test_x[a b]", "tests/test_a.py::test_x[[nested]]",
+    ], app)
+    assert good == ["tests/test_a.py::test_x[WELCOME10@20000-10-20000-2000]", "tests/test_a.py::TestK::test_y[a=1,b/2]"]
+    assert len(bad) == 4

@@ -7,9 +7,11 @@ Routing, in order:
 3. Health endpoint returned an error     -> service_health.
 4. Reachable but delivery failed         -> the model compares the probe with service
    logs and recent changes. Only a grounded ``code_bug`` diagnosis goes on, and only if
-   the app's own pytest suite fails at the deployed commit (the failure reproduces).
-   That failure then runs through the CI repair pipeline (reproduce, candidates, verify).
-   Anything else is ``needs_review`` with the next diagnostic to run.
+   the failure reproduces locally: either the app's pytest suite fails at the deployed
+   commit, or (when the suite passes) the model writes a new regression test that
+   fails there for the reported reason (``regression.py``). That failure then runs
+   through the CI repair pipeline (reproduce, candidates, verify), and an added test
+   ships with the fix. Anything else is ``needs_review`` with the next diagnostic.
 5. A verified patch is "pending_deploy". Recovery is reported only by
    ``confirm_recovery``: a fresh probe id that is confirmed delivered.
 
@@ -35,6 +37,7 @@ from .investigator import investigate
 from .live_check import ServiceConfig, run_live_check
 from .llm import OpenAIStructuredLLM, StructuredLLM
 from .pipeline import repair_ci_failure
+from .regression import write_regression_test
 from .verifier import VerificationError, VerificationSession
 
 SERVICE_HEALTH_STEPS = [
@@ -56,6 +59,13 @@ class LiveIncident(BaseModel):
     source_files: dict[str, str] = Field(default_factory=dict)
     similar_incidents: list[PriorIncident] = Field(default_factory=list)
     ci_status: Literal["passing", "failing", "unknown"] = "unknown"
+    probe_details: str = Field("", description="The app's failing probe checks (JSON), with source hints.")
+    test_examples: dict[str, str] = Field(
+        default_factory=dict, description="Existing test files (and conftest) to model a regression test on."
+    )
+    write_regression_test: bool = Field(
+        True, description="When the suite passes, try to write a new test that reproduces the failure."
+    )
 
 
 class LiveIncidentResult(BaseModel):
@@ -131,6 +141,26 @@ def diagnose_live_failure(incident: LiveIncident, llm: StructuredLLM | None = No
     if isinstance(suite, str):
         return result("needs_review", "investigate", suite, diagnosis.likely_cause, diagnosis=diagnosis,
                       next_diagnostic=diagnosis.next_diagnostic)
+    if suite.passed and incident.write_regression_test:
+        written = write_regression_test(request, diagnosis, llm, app, incident.test_examples)
+        if written.test is None:
+            return result(
+                "needs_review", "investigate",
+                f"diagnosis points at code ({', '.join(diagnosis.suspect_files)}) but the {app.name} test "
+                f"suite passes at {incident.deployed_sha[:7]} and {written.reason}",
+                diagnosis.likely_cause, diagnosis=diagnosis, reproduction=suite.output_tail,
+                next_diagnostic=diagnosis.next_diagnostic
+                or f"Write a pytest regression test that reproduces: {diagnosis.likely_cause}",
+            )
+        test = written.test
+        logs = f"Regression test {test.path} (asserts: {test.asserts}) at {incident.deployed_sha[:7]}:\n"
+        repair = repair_ci_failure(
+            _request_for(incident, failed_test_logs=logs + test.failing_run.output_tail)
+            .model_copy(update={"added_tests": {test.path: test.content}}),
+            llm,
+        )
+        return _repair_result(result, repair, diagnosis, test.failing_run.output_tail, check, app,
+                              f"reproduced by new regression test {test.path}")
     if suite.passed:
         return result(
             "needs_review", "investigate",
@@ -142,17 +172,22 @@ def diagnose_live_failure(incident: LiveIncident, llm: StructuredLLM | None = No
         )
 
     repair = repair_ci_failure(_request_for(incident, failed_test_logs=suite.output_tail), llm)
+    return _repair_result(result, repair, diagnosis, suite.output_tail, check, app,
+                          f"reproduced by the {app.name} test suite")
+
+
+def _repair_result(result, repair: RepairResult, diagnosis: Diagnosis, reproduction: str,
+                   check: LiveCheckResult, app: AppConfig, how: str) -> LiveIncidentResult:
     if repair.outcome == "verified":
         return result(
-            "verified", "code_repair",
-            f"reproduced by the {app.name} test suite and fixed: {repair.reason}",
-            diagnosis.likely_cause, diagnosis=repair.diagnosis or diagnosis, reproduction=suite.output_tail,
+            "verified", "code_repair", f"{how} and fixed: {repair.reason}",
+            diagnosis.likely_cause, diagnosis=repair.diagnosis or diagnosis, reproduction=reproduction,
             repair=repair, recovery="pending_deploy",
             recommended_actions=["Deploy the verified patch.",
                                  f"Call confirm_recovery({check.service!r}) - recovery needs a fresh delivered probe."],
         )
     return result("needs_review", "code_repair", f"repair: {repair.reason}", diagnosis.likely_cause,
-                  diagnosis=repair.diagnosis or diagnosis, reproduction=suite.output_tail, repair=repair,
+                  diagnosis=repair.diagnosis or diagnosis, reproduction=reproduction, repair=repair,
                   next_diagnostic=diagnosis.next_diagnostic)
 
 
@@ -202,6 +237,7 @@ def _request_for(incident: LiveIncident, failed_test_logs: str) -> RepairRequest
         similar_incidents=incident.similar_incidents,
         live_check=incident.check,
         service_logs=incident.service_logs,
+        probe_details=incident.probe_details,
     )
 
 
