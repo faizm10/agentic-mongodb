@@ -1,12 +1,15 @@
 # NovaMart convenience targets. Run from the shopping/ directory.
 PY := backend/.venv/bin/python
 
-.PHONY: install backend frontend test probe typecheck build bugs reset-bugs reset-data
+.PHONY: install dev backend frontend test probe typecheck build bugs reset-bugs reset-data
 
 install:
 	python3 -m venv backend/.venv
 	$(PY) -m pip install -r backend/requirements.txt
 	cd frontend && npm ci
+
+dev:
+	python3 run_servers.py
 
 backend:
 	cd backend && .venv/bin/uvicorn app.main:app --reload --port 8100

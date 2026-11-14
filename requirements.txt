@@ -1,0 +1,6 @@
+-r agents/requirements.txt
+httpx>=0.27
+pymongo>=4.10
+python-dotenv>=1.0
+requests>=2.31
+mongomock>=4.3
