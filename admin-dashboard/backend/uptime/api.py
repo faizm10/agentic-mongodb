@@ -1,7 +1,7 @@
-"""Dashboard API (read endpoints are public to the dashboard; mutations need an admin token).
+"""Dashboard API (read and mutation endpoints are open; keep it on localhost or behind your own auth).
 
 Every response is ``{"data": ..., "meta": {"generated_at", "storage"}}``; every error is
-``{"error": {"code", "message"}}``. No secrets (MongoDB URI, admin token) are ever returned.
+``{"error": {"code", "message"}}``. No secrets (MongoDB URI) are ever returned.
 """
 
 from __future__ import annotations
@@ -9,12 +9,11 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
-import secrets
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
 
-from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -145,7 +144,6 @@ def create_app(
                                       incident_retention_days=settings.incident_retention_days)
     for service in settings.services:  # make configuration visible even before the worker runs
         storage.upsert_service(service)
-    admin_token = os.environ.get("OPSRELAY_ADMIN_TOKEN", "")
     stop = asyncio.Event()
     monitor = UptimeMonitor(storage, settings.services, interval_seconds=settings.interval_seconds,
                             lease_ttl_seconds=settings.lease_ttl, retention_days=settings.retention_days,
@@ -186,13 +184,6 @@ def create_app(
     async def validation_error(_: Request, exc: RequestValidationError):
         message = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
         return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_FAILED", "message": message}})
-
-    def require_admin(authorization: str | None = Header(default=None)) -> None:
-        if not admin_token:
-            raise HTTPException(403, "Mutations are disabled: OPSRELAY_ADMIN_TOKEN is not configured on the server.")
-        supplied = (authorization or "").removeprefix("Bearer ").strip()
-        if not supplied or not secrets.compare_digest(supplied, admin_token):
-            raise HTTPException(401, "A valid admin token is required (Authorization: Bearer <token>).")
 
     def services() -> list[ServiceConfig]:
         stored = {s.id: s for s in storage.list_services()}
@@ -348,7 +339,7 @@ def create_app(
         return ok(build_handoff(incident, service, clock()))
 
     # ---------------------------------------------------------- mutations
-    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_admin)])
+    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]])
     def start_demo_outage(service_id: str, body: DemoOutageIn):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -363,7 +354,7 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 
-    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_admin)])
+    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]])
     def stop_demo_outage(service_id: str):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -376,13 +367,13 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 
-    @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig], dependencies=[Depends(require_admin)])
+    @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
     def patch_service(service_id: str, body: ServicePatch):
         service_or_404(service_id)
         updated = storage.set_service_enabled(service_id, body.enabled)
         return ok(PublicServiceConfig(**updated.model_dump()))
 
-    @app.post("/api/v1/monitor/check-now", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_admin)])
+    @app.post("/api/v1/monitor/check-now", response_model=Envelope[dict[str, Any]])
     async def check_now():
         if monitor is not None:
             result = await monitor.run_cycle(scheduled=False)
@@ -392,7 +383,7 @@ def create_app(
         storage.request_check(clock())
         return ok({"ran": False, "requested": True, "message": "The worker will run a check within ~1s."})
 
-    @app.post("/api/v1/incidents/{incident_id}/acknowledge", response_model=Envelope[IncidentOut], dependencies=[Depends(require_admin)])
+    @app.post("/api/v1/incidents/{incident_id}/acknowledge", response_model=Envelope[IncidentOut])
     def acknowledge(incident_id: str, body: AckIn):
         incident = incident_or_404(incident_id)
         now = clock()
@@ -401,7 +392,7 @@ def create_app(
         storage.save_incident(incident)
         return ok(incident_out(incident, now))
 
-    @app.post("/api/v1/incidents/{incident_id}/links", response_model=Envelope[IncidentOut], dependencies=[Depends(require_admin)])
+    @app.post("/api/v1/incidents/{incident_id}/links", response_model=Envelope[IncidentOut])
     def add_link(incident_id: str, body: LinkIn):
         incident = incident_or_404(incident_id)
         now = clock()

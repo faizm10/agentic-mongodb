@@ -30,27 +30,20 @@ const GROUPS: { id: ServiceId; name: string; actions: { scenario: Scenario; labe
 ];
 
 export function OutageControls({ services, onChange }: { services: ServiceOverview[]; onChange: () => void }) {
-  const [token, setToken] = useState("");
   const [pending, setPending] = useState<ServiceId | null>(null);
   const [notice, setNotice] = useState("");
 
   async function change(id: ServiceId, scenario?: Scenario) {
-    if (!token.trim()) {
-      setNotice("Enter the admin token to use demo controls.");
-      return;
-    }
     setPending(id);
     setNotice("");
     try {
       const response = await fetch(`/api/v1/demo/outages/${id}`, {
         method: scenario ? "POST" : "DELETE",
-        headers: { Authorization: `Bearer ${token.trim()}`, ...(scenario ? { "Content-Type": "application/json" } : {}) },
+        headers: scenario ? { "Content-Type": "application/json" } : undefined,
         body: scenario ? JSON.stringify({ scenario }) : undefined,
       });
       if (!response.ok) {
-        setNotice(response.status === 401 ? "Admin token was not accepted." : response.status === 403
-          ? "Set OPSRELAY_ADMIN_TOKEN on the uptime API to enable these controls."
-          : "Could not change the demo outage. Check that the apps and uptime API are running from this checkout.");
+        setNotice("Could not change the demo outage. Check that the apps and uptime API are running from this checkout.");
         return;
       }
       setNotice(scenario ? "Outage requested. Waiting for the next status check." : "Recovery requested. Waiting for the next status check.");
@@ -73,17 +66,6 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
           <h2 id="outage-controls-title" className="text-sm font-semibold">Demo outage controls</h2>
           <p className="mt-0.5 text-xs text-muted">Change a local app, then watch its monitored status update. Restore it when finished.</p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-muted">
-          Admin token
-          <input
-            type="password"
-            autoComplete="off"
-            value={token}
-            onChange={(event) => setToken(event.target.value)}
-            placeholder="Required"
-            className="w-36 rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink placeholder:text-faint sm:w-44"
-          />
-        </label>
       </div>
       <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
         {GROUPS.map((group) => {

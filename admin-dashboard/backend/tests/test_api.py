@@ -1,4 +1,4 @@
-"""Dashboard API: envelope, independent statuses, uptime from stored checks, incidents, auth, demo scenario."""
+"""Dashboard API: envelope, independent statuses, uptime from stored checks, incidents, demo scenario."""
 
 import asyncio
 
@@ -12,8 +12,7 @@ from .conftest import SERVICES, make_mongo, make_sqlite
 
 
 @pytest.fixture(params=["sqlite", "mongodb"])
-def env(request, tmp_path, settings, clock, apps, monkeypatch):
-    monkeypatch.delenv("OPSRELAY_ADMIN_TOKEN", raising=False)
+def env(request, tmp_path, settings, clock, apps):
     storage = make_sqlite(tmp_path) if request.param == "sqlite" else make_mongo()
     monitor = UptimeMonitor(storage, SERVICES, interval_seconds=30, clock=clock, sleep=clock.sleep,
                             transport=apps.transport(), worker_id="test-worker")
@@ -25,9 +24,7 @@ def env(request, tmp_path, settings, clock, apps, monkeypatch):
             clock.advance(30)
             storage.acquire_lease("test-worker", clock(), 70)
 
-    def client(token=None):
-        if token is not None:
-            monkeypatch.setenv("OPSRELAY_ADMIN_TOKEN", token)
+    def client():
         return TestClient(create_app(storage, settings, clock=clock))
 
     return {"storage": storage, "tick": tick, "client": client, "apps": apps, "clock": clock}
@@ -99,26 +96,20 @@ def test_stale_data_is_reported_as_unknown(env):
     assert data["monitoring"]["status"] == "stale"
 
 
-def test_mutations_require_admin_token(env):
-    open_client = env["client"]()
-    assert open_client.patch("/api/v1/services/novamart", json={"enabled": False}).status_code == 403
-    c = env["client"](token="s3cret-token")
-    assert c.patch("/api/v1/services/novamart", json={"enabled": False}).status_code == 401
-    bad = c.patch("/api/v1/services/novamart", json={"enabled": False}, headers={"Authorization": "Bearer nope"})
-    assert bad.status_code == 401 and bad.json()["error"]["code"] == "UNAUTHORIZED"
-    good = c.patch("/api/v1/services/novamart", json={"enabled": False}, headers={"Authorization": "Bearer s3cret-token"})
-    assert good.status_code == 200 and good.json()["data"]["enabled"] is False
-    assert "s3cret" not in c.get("/api/v1/summary").text
+def test_mutations_need_no_token(env):
+    c = env["client"]()
+    r = c.patch("/api/v1/services/novamart", json={"enabled": False})
+    assert r.status_code == 200 and r.json()["data"]["enabled"] is False
 
 
-def test_admin_can_attach_repair_pr_link_once(env):
+def test_can_attach_repair_pr_link_once(env):
     env["apps"].mode["novamart"] = "functional_bug"
     env["tick"]()
-    c = env["client"](token="t")
+    c = env["client"]()
     inc = c.get("/api/v1/incidents").json()["data"][0]["id"]
     payload = {"kind": "repair_pr", "url": "https://github.com/faizm10/agentic-mongodb/pull/99", "label": "Fix discount"}
     for _ in range(2):
-        r = c.post(f"/api/v1/incidents/{inc}/links", json=payload, headers={"Authorization": "Bearer t"})
+        r = c.post(f"/api/v1/incidents/{inc}/links", json=payload)
     assert r.status_code == 200 and len(r.json()["data"]["links"]) == 1
 
 
