@@ -43,7 +43,7 @@ def find_shortages(requested: Mapping[str, int], available: Mapping[str, int]) -
     shortages: list[Shortage] = []
     for product_id, requested_qty in requested.items():
         available_qty = max(0, available.get(product_id, 0))
-        if available_qty <= 0:
+        if requested_qty > available_qty:
             shortages.append(Shortage(product_id, requested_qty, available_qty))
     return shortages
 
