@@ -173,3 +173,60 @@ def test_monitor_adapter_maps_hamza_events(db):
     assert run["failed_logs"] == "FAILED test_x" and run["run_id"] == 77
     iid, created = o.ingest_failed_run(run, db=db)
     assert created and o.branch_for(m.incidents(db).find_one({"_id": iid})) == "agent/fix-77-1"
+
+
+def test_github_adapter_uses_hamza_publisher_and_survives_crash(db):
+    """Full run through GitHubAdapter: crash after publish, resume adopts the same PR."""
+    from types import SimpleNamespace as NS
+
+    from agents.github_publisher import validate_request
+    from agents.github_types import STATUS_VERIFIED, GitHubOperationResult
+
+    prs = {}
+
+    class Client:  # Hamza's GitHubClient.find_pr(branch, state)
+        def find_pr(self, branch, state="all"):
+            return prs.get(branch)
+
+    class Publisher:  # Hamza's PullRequestPublisher.create_or_find_pr(request)
+        calls = []
+
+        def create_or_find_pr(self, req):
+            assert validate_request(req) is None, validate_request(req)
+            Publisher.calls.append(req)
+            branch = f"agent/fix-{req.incident_id}"
+            prs.setdefault(branch, NS(number=42, url="https://github.com/x/y/pull/42", state="open"))
+            return GitHubOperationResult(status=STATUS_VERIFIED, branch=branch, pr_number=42,
+                                         pr_url="https://github.com/x/y/pull/42")
+
+    class CrashAfterPublish(o.GitHubAdapter):
+        def open_draft_pr(self, *a, **kw):
+            super().open_draft_pr(*a, **kw)
+            raise Crash()
+
+    run = {**SAMPLE_RUN, "commit_sha": "a" * 40}
+    iid, _ = o.ingest_failed_run(run, db=db)
+    with pytest.raises(Crash):
+        o.Orchestrator(CrashAfterPublish(Client(), Publisher()), FakeRepairer(), db=db,
+                       worker_id="w1").run_incident(iid)
+    req = Publisher.calls[0]
+    assert req.incident_id == "9000001-1" and req.base_sha == "a" * 40
+    assert [f.path for f in req.files] == ["shopping/cart.py"]
+
+    m.incidents(db).update_one({"_id": iid}, {"$set": {
+        "lease.expires_at": m.utcnow() - timedelta(seconds=1)}})
+    inc = o.Orchestrator(o.GitHubAdapter(Client(), Publisher()), FakeRepairer(), db=db,
+                         worker_id="w2").run_incident(iid)
+    assert inc["status"] == m.STATUS_AWAITING_MERGE and inc["pr"]["number"] == 42
+    assert len(Publisher.calls) == 1  # resumed worker found the PR, didn't publish again
+
+
+def test_github_adapter_failed_publish_raises(db):
+    from agents.github_types import STATUS_FAILED, GitHubOperationResult
+
+    pub = type("P", (), {"create_or_find_pr": lambda self, r: GitHubOperationResult(
+        status=STATUS_FAILED, detail="stale base")})()
+    adapter = o.GitHubAdapter(None, pub)
+    with pytest.raises(o.PublishFailed):
+        adapter.open_draft_pr("r", "agent/fix-1-1", "a" * 40, "t", "b",
+                              {"files": {"shopping/backend/app/pricing.py": "x"}})
