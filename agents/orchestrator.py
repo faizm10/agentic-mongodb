@@ -421,15 +421,21 @@ class GitHubAdapter:
 
     def open_draft_pr(self, repo: str, branch: str, base_sha: str, title: str,
                       body: str, patch: dict) -> dict:
-        from agents.github_types import (STATUS_FAILED, STATUS_VERIFIED, PublishRequest,
-                                         fix_branch_name)
+        from agents.github_types import (APP_ROOTS, STATUS_FAILED, STATUS_VERIFIED,
+                                         PublishRequest, fix_branch_name)
 
         incident_id = branch.removeprefix("agent/fix-")  # Hamza's id: "<run_id>-<attempt>"
         if fix_branch_name(incident_id) != branch:
             raise ValueError(f"branch {branch!r} doesn't follow agent/fix-<run>-<attempt>")
+        paths = list((patch.get("files") or {}) if isinstance(patch.get("files"), dict)
+                     else [f.get("path", "") for f in patch.get("files") or []])
+        app = next((k for k, root in APP_ROOTS.items()
+                    if any(p.startswith(root + "/") for p in paths)), "")
         # Only verified patches reach this stage (patch_verified gate).
         req = PublishRequest.from_dict({**patch, "tests_passed": True},
-                                       incident_id=incident_id, base_sha=base_sha)
+                                       incident_id=incident_id, base_sha=base_sha,
+                                       application=app, title=title,
+                                       context_notes=_similar_section(body))
         res = self.publisher.create_or_find_pr(req)
         if res.status == STATUS_FAILED:
             raise PublishFailed(res.detail)
@@ -438,9 +444,24 @@ class GitHubAdapter:
         return {"number": res.pr_number, "url": res.pr_url}
 
 
+def _similar_section(body: str) -> str:
+    """The 'Similar past incidents' block from the orchestrator's PR text, if any."""
+    marker = "**Similar past incidents"
+    start = (body or "").find(marker)
+    if start < 0:
+        return ""
+    lines = []
+    for line in body[start:].splitlines():
+        if lines and not line.strip():
+            break
+        lines.append(line)
+    return "\n".join(lines)
+
+
 def _build_real():
     """Wire up teammates' modules (Hamza: GitHub + monitor + publisher, Faiz: repair)."""
     from agents.github_client import GitHubClient
+    from agents.git_sync import SyncingRepairer
     from agents.github_publisher import PullRequestPublisher
     from agents.monitor import FailureMonitor
     from agents.patcher import Repairer as FaizRepairer
@@ -448,7 +469,7 @@ def _build_real():
     gh = GitHubClient()
     repo_path = os.getenv("OPSRELAY_REPO_PATH", str(Path(__file__).resolve().parents[1]))
     return (Orchestrator(GitHubAdapter(gh, PullRequestPublisher(gh)),
-                         FaizRepairer(repo_path=repo_path)),
+                         SyncingRepairer(FaizRepairer(repo_path=repo_path), repo_path)),
             MonitorAdapter(gh, FailureMonitor(gh)))
 
 

@@ -229,6 +229,8 @@ class PublishRequest(_Serializable):
     test_summary: str = ""      # tail of the passing test output
     diff: str = ""
     workflow_url: str = ""
+    title: str = ""             # optional PR title chosen by the caller (else generated)
+    context_notes: str = ""     # optional markdown appended to the PR body (e.g. similar past incidents)
 
     @classmethod
     def from_dict(
@@ -239,6 +241,8 @@ class PublishRequest(_Serializable):
         base_sha: Optional[str] = None,
         application: str = "",
         workflow_url: str = "",
+        title: str = "",
+        context_notes: str = "",
     ) -> "PublishRequest":
         """Accepts the ``Repairer.repair()`` dict (files as ``{path: content}``) or a
         list of ``{"path", "content"}`` items. ``tests_passed`` falls back to
@@ -268,6 +272,8 @@ class PublishRequest(_Serializable):
             test_summary=d.get("test_summary") or d.get("test_output", ""),
             diff=d.get("diff") or "",
             workflow_url=workflow_url or d.get("workflow_url", ""),
+            title=title or d.get("title", ""),
+            context_notes=context_notes or d.get("context_notes", ""),
         )
 
     @classmethod

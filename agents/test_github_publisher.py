@@ -44,6 +44,7 @@ class FakeGitHub:
         self.commits: dict[str, dict] = {}
         self.refs: dict[str, str] = {}
         self.pulls: list[dict] = []
+        self.draft_unsupported = False
         self.requests: list[tuple[str, str]] = []
         self.faults: list[dict] = []
         tree = self._new_tree({
@@ -198,8 +199,12 @@ class FakeGitHub:
                 return self._msg(422, "Validation Failed", ["Head ref must be a branch"])
             if self.files_at(body["head"]) == self.files_at(body["base"]):
                 return self._msg(422, "Validation Failed", [f"No commits between {body['base']} and {body['head']}"])
+            if body.get("draft") and self.draft_unsupported:
+                return self._msg(422, "Validation Failed",
+                                 ["Draft pull requests are not supported in this repository."])
             pull = {"number": len(self.pulls) + 1, "title": body["title"], "body": body["body"],
-                    "head_ref": body["head"], "state": "open", "merged": False}
+                    "head_ref": body["head"], "state": "open", "merged": False,
+                    "draft": bool(body.get("draft"))}
             self.pulls.append(pull)
             return self._json(201, self._pull_json(pull))
 
@@ -451,3 +456,58 @@ def test_result_has_the_contract_keys_for_developer_3(fake):
     d = publisher(fake).create_or_find_pr(request(fake)).to_dict()
     assert {"status", "pr_number", "pr_url", "branch", "commit_sha"} <= set(d)
     assert isinstance(GitHubOperationResult(status="verified").to_dict(), dict)
+
+
+# --------------------------------------------------------------------------- #
+# Draft PRs, caller-supplied title, and memory context in the body
+# --------------------------------------------------------------------------- #
+
+def test_pr_is_opened_as_a_draft_by_default(fake):
+    result = publisher(fake).create_or_find_pr(request(fake))
+    assert result.status == STATUS_VERIFIED and fake.pulls[0]["draft"] is True
+
+
+def test_draft_can_be_turned_off(fake):
+    client = GitHubClient(CONFIG, transport=httpx.MockTransport(fake.handler), retry_backoff=0)
+    PullRequestPublisher(client, retry_delay=0, draft=False).create_or_find_pr(request(fake))
+    assert fake.pulls[0]["draft"] is False
+
+
+def test_repo_without_draft_support_gets_a_normal_pr(fake):
+    fake.draft_unsupported = True
+    result = publisher(fake).create_or_find_pr(request(fake))
+    assert result.status == STATUS_VERIFIED and len(fake.pulls) == 1
+    assert fake.pulls[0]["draft"] is False
+
+
+def test_caller_title_and_context_notes_reach_the_pr(fake):
+    req = request(fake, title="[OpsRelay] Fix shopping CI failure (run 101)",
+                  context_notes="**Similar past incidents (Atlas Vector Search):**\n- (0.91) discount bug")
+    publisher(fake).create_or_find_pr(req)
+    pull = fake.pulls[0]
+    assert pull["title"] == "[OpsRelay] Fix shopping CI failure (run 101)"
+    assert "## Context from OpsRelay memory" in pull["body"] and "(0.91) discount bug" in pull["body"]
+    assert "never merged automatically" in pull["body"]
+
+
+def test_context_notes_cannot_break_the_incident_marker(fake):
+    publisher(fake).create_or_find_pr(request(fake, context_notes="x --> <!-- evil"))
+    body = fake.pulls[0]["body"]
+    assert "evil" in body and body.count("<!--") == 1 and body.count("-->") == 1
+
+
+def test_orchestrator_adapter_passes_title_and_memory_to_the_pr(fake):
+    from agents.orchestrator import GitHubAdapter
+
+    client = GitHubClient(CONFIG, transport=httpx.MockTransport(fake.handler), retry_backoff=0)
+    adapter = GitHubAdapter(client, PullRequestPublisher(client, retry_delay=0))
+    body = ("Automated repair for run 101.\n\n**Root cause:** x\n\n"
+            "**Similar past incidents (Atlas Vector Search):**\n- (0.88) earlier discount bug\n\n"
+            "OpsRelay incident `101-1` needs review.")
+    patch = {"files": {PRICING: FIXED}, "root_cause": "discount bug", "summary": "fix discount"}
+    out = adapter.open_draft_pr("acme/agentic-mongodb", BRANCH, fake.base_sha,
+                                "[OpsRelay] Fix shopping CI failure", body, patch)
+    pull = fake.pulls[0]
+    assert out["number"] == 1 and pull["title"] == "[OpsRelay] Fix shopping CI failure"
+    assert "(0.88) earlier discount bug" in pull["body"] and "Application | shopping" in pull["body"]
+    assert "OpsRelay incident `101-1`" not in pull["body"]      # only the memory block is copied
