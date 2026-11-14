@@ -76,7 +76,7 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
                     round_attempts.append(CandidateAttempt(
                         round=round_no, index=index, summary=patch.summary, patch=patch.diff,
                         changed_files=check.changed_files, changed_lines=check.changed_lines,
-                        passed=check.passed, reason=check.reason,
+                        passed=check.passed, reason=check.reason, files=check.files,
                         reproduce_runs=check.reproduce_runs, suite=check.suite,
                     ))
                 attempts += round_attempts
@@ -89,6 +89,7 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
                         f"{best.reason}; chose candidate {best.round}.{best.index} "
                         f"({best.changed_lines} changed lines) of {len(attempts)} tried",
                         diagnosis=diagnosis, patch=best.patch, changed_files=best.changed_files,
+                        patched_files=best.files,
                         baseline=baseline.runs, reproduce_after_patch=best.reproduce_runs,
                         patched_suite=best.suite, attempts=attempts,
                     )

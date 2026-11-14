@@ -22,6 +22,7 @@ from .contracts import (
     CandidateAttempt,
     Diagnosis,
     PatchResult,
+    PriorIncident,
     RepairRequest,
     load_app_config,
 )
@@ -300,3 +301,85 @@ def _build_prompt(
         )
         parts.append(untrusted_block("previous_attempt", body, limit=5_000))
     return "\n\n".join(parts)
+
+
+# --- Orchestrator adapter -----------------------------------------------------
+
+
+class Repairer:
+    """Mo's orchestrator contract: ``repair(failed_run, similar_incidents) -> PatchResult dict``.
+
+    FailedRun   = {repo, app, run_id, run_attempt, commit_sha, failed_logs, failed_tests?, ...}
+    similar     = Mo's memory matches: {memory_id, score, summary, root_cause?, fix_summary?}
+    PatchResult = {tests_passed, test_output, diff, files: {path: new_content}, changed_files,
+                   summary, root_cause?} plus outcome/reason for the incident record.
+
+    Source files and the recent diff are read from ``repo_path`` (a local clone that contains
+    the failed commit; default ``OPSRELAY_REPO_PATH`` or the current directory).
+    """
+
+    MAX_SOURCE_FILES = 40
+    MAX_FILE_BYTES = 100_000
+
+    def __init__(self, repo_path: str | None = None, llm: StructuredLLM | None = None):
+        import os
+
+        self.repo_path = repo_path or os.environ.get("OPSRELAY_REPO_PATH", ".")
+        self.llm = llm
+
+    def repair(self, failed_run: dict, similar: list[dict]) -> dict:
+        from .pipeline import repair_ci_failure
+
+        result = repair_ci_failure(self.request_for(failed_run, similar), self.llm)
+        chosen = next((a for a in result.attempts if a.patch == result.patch and a.passed), None)
+        output = result.patched_suite or (result.baseline[-1] if result.baseline else None)
+        return {
+            "tests_passed": result.outcome == "verified",
+            "test_output": output.output_tail if output else result.reason,
+            "diff": result.patch or "",
+            "files": result.patched_files,
+            "changed_files": result.changed_files,
+            "summary": chosen.summary if chosen else result.reason,
+            "root_cause": result.diagnosis.likely_cause if result.diagnosis else None,
+            "outcome": result.outcome,
+            "reason": result.reason,
+        }
+
+    def request_for(self, failed_run: dict, similar: list[dict]) -> RepairRequest:
+        app = load_app_config(failed_run["app"])
+        sha = failed_run["commit_sha"]
+        if not re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
+            raise ValueError(f"invalid commit sha {sha!r}")
+        return RepairRequest(
+            app=app.name,
+            repo_path=self.repo_path,
+            commit_sha=sha,
+            failed_test_logs=failed_run.get("failed_logs", ""),
+            recent_diff=self._git("diff", f"{sha}^", sha, "--", app.root, default=""),
+            source_files=self._source_files(sha, app),
+            similar_incidents=[
+                PriorIncident(
+                    id=str(s.get("memory_id") or s.get("id") or i), summary=s.get("summary") or "",
+                    root_cause=s.get("root_cause"), fix_summary=s.get("fix_summary"), similarity=s.get("score"),
+                )
+                for i, s in enumerate(similar)
+            ],
+        )
+
+    def _source_files(self, sha: str, app: AppConfig) -> dict[str, str]:
+        listing = self._git("ls-tree", "-r", "--name-only", sha, "--", *app.source_dirs, default="")
+        files: dict[str, str] = {}
+        for path in listing.splitlines():
+            if len(files) >= self.MAX_SOURCE_FILES:
+                break
+            if path.endswith(".py") and path_violation(path, app) is None:
+                content = self._git("show", f"{sha}:{path}", default=None)
+                if content is not None and len(content) <= self.MAX_FILE_BYTES:
+                    files[path] = content
+        return files
+
+    def _git(self, *args: str, default: str | None) -> str | None:
+        import subprocess
+
+        proc = subprocess.run(["git", "-C", self.repo_path, *args], capture_output=True, text=True)
+        return proc.stdout if proc.returncode == 0 else default

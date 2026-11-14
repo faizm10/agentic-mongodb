@@ -75,20 +75,22 @@ class CandidateCheck:
     changed_lines: int = 0
     reproduce_runs: list[TestRun] = field(default_factory=list)
     suite: TestRun | None = None
+    files: dict[str, str] = field(default_factory=dict)
 
 
 class VerificationSession:
     """Export the failed commit once, then reproduce and check candidates against it.
 
     Use as a context manager; raises VerificationError on entry if the commit,
-    app root or test ids cannot be used.
+    app root or test ids cannot be used. ``failing_tests`` may be empty when the
+    caller only wants ``run_suite`` (a live incident looking for a reproduction).
     """
 
-    def __init__(self, app: AppConfig, repo_path: str, commit_sha: str, failing_tests: list[str]):
+    def __init__(self, app: AppConfig, repo_path: str, commit_sha: str, failing_tests: list[str] | None = None):
         self.app = app
         self.repo_path = repo_path
         self.commit_sha = commit_sha
-        self.failing_tests = failing_tests
+        self.failing_tests = failing_tests or []
         self._tmp: tempfile.TemporaryDirectory | None = None
         self._candidates = 0
 
@@ -98,8 +100,6 @@ class VerificationSession:
         tests, bad = _validate_node_ids(self.failing_tests, self.app)
         if bad:
             raise VerificationError(f"refusing unsafe or out-of-scope test ids: {bad}")
-        if not tests:
-            raise VerificationError("no failing test ids to reproduce")
         self.tests = tests
 
         self._tmp = tempfile.TemporaryDirectory(prefix="opsrelay-verify-")
@@ -121,8 +121,15 @@ class VerificationSession:
             self._tmp.cleanup()
             self._tmp = None
 
+    def run_suite(self) -> TestRun:
+        """Run the app's full test suite once on a copy of the original code."""
+        workspace = self._fresh_copy(f"suite-{self._next_id()}")
+        return self._pytest(workspace / self.app.root, [self.app.test_dir])
+
     def reproduce(self) -> Baseline:
         """Run the failing tests ``baseline_runs`` times on a copy of the original code."""
+        if not self.tests:
+            raise VerificationError("no failing test ids to reproduce")
         workspace = self._fresh_copy("baseline")
         app_dir = workspace / self.app.root
         return Baseline([self._pytest(app_dir, self.tests) for _ in range(max(1, self.app.baseline_runs))])
@@ -133,8 +140,7 @@ class VerificationSession:
         if not patch.accepted:
             return CandidateCheck(False, f"patch rejected: {patch.rejection_reason}")
 
-        self._candidates += 1
-        workspace = self._fresh_copy(f"candidate-{self._candidates}")
+        workspace = self._fresh_copy(f"candidate-{self._next_id()}")
         fields = dict(changed_files=patch.changed_files, changed_lines=patch.changed_lines)
         applied = _git(workspace, "apply", "--whitespace=nowarn", "-", input=diff, check=False)
         if applied.returncode != 0:
@@ -162,8 +168,13 @@ class VerificationSession:
         return CandidateCheck(
             True,
             f"{len(self.tests)} failing test(s) now pass on {len(runs)} rerun(s), plus the full {self.app.name} suite",
-            reproduce_runs=runs, suite=suite, **fields,
+            reproduce_runs=runs, suite=suite, files={p: (workspace / p).read_text() for p in patch.changed_files},
+            **fields,
         )
+
+    def _next_id(self) -> int:
+        self._candidates += 1
+        return self._candidates
 
     def _fresh_copy(self, name: str) -> Path:
         dest = self.root / name
@@ -190,6 +201,8 @@ def verify_patch(
     patch = validate_patch(diff, app)
     if not patch.accepted:
         return result("needs_review", f"patch rejected: {patch.rejection_reason}", patch=diff or None)
+    if not failing_tests:
+        return result("needs_review", "no failing test ids to reproduce", patch=diff)
     try:
         with VerificationSession(app, repo_path, commit_sha, failing_tests) as session:
             baseline = session.reproduce()
@@ -205,7 +218,7 @@ def verify_patch(
 
     return result(
         "verified" if check.passed else "needs_review", check.reason,
-        patch=diff, changed_files=check.changed_files, baseline=baseline.runs,
+        patch=diff, changed_files=check.changed_files, patched_files=check.files, baseline=baseline.runs,
         reproduce_after_patch=check.reproduce_runs, patched_suite=check.suite,
     )
 

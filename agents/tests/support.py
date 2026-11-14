@@ -224,6 +224,8 @@ def diagnosis_draft(**overrides) -> _DiagnosisDraft:
         ],
         suspect_files=[CART_PATH],
         confidence=0.9,
+        failure_class="code_bug",
+        next_diagnostic=None,
         review_reason=None,
     )
     fields.update(overrides)

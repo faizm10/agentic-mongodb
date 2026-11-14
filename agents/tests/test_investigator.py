@@ -36,7 +36,7 @@ def test_fabricated_evidence_forces_needs_review(shopping):
     assert diagnosis.outcome == "needs_review"
     assert diagnosis.evidence == []
     assert "not found verbatim" in diagnosis.review_reason
-    assert "no grounded evidence from the current run" in diagnosis.review_reason
+    assert "no grounded evidence from the current failure" in diagnosis.review_reason
 
 
 def test_prior_incident_alone_is_not_enough(shopping):
@@ -49,7 +49,7 @@ def test_prior_incident_alone_is_not_enough(shopping):
 
     assert diagnosis.outcome == "needs_review"
     assert len(diagnosis.evidence) == 1
-    assert "no grounded evidence from the current run" in diagnosis.review_reason
+    assert "no grounded evidence from the current failure" in diagnosis.review_reason
 
 
 def test_suspect_files_outside_source_dirs_are_dropped(shopping):

@@ -58,6 +58,46 @@ class PriorIncident(BaseModel):
     similarity: float | None = None
 
 
+FailureKind = Literal[
+    "connection_timeout", "connection_refused", "connection_error", "http_error", "not_delivered", "invalid_response",
+]
+UNREACHABLE: tuple[str, ...] = ("connection_timeout", "connection_refused", "connection_error")
+
+
+class ProbeStep(BaseModel):
+    name: Literal["health", "send", "readback", "synthetic"]
+    method: str
+    url: str
+    status_code: int | None = None
+    latency_ms: float | None = None
+    failure_kind: FailureKind | None = None
+    error: str | None = None
+
+
+class LiveCheckResult(BaseModel):
+    """One-shot live check of a service: reachability plus a send-and-deliver probe."""
+
+    service: str
+    app: str
+    checked_at: datetime
+    base_url: str
+    target: Literal["live", "fixture"] = Field(description="Whether this ran against the real service or a local fixture.")
+    probe_id: str = Field(description="Unique per check; recovery checks always use a fresh one.")
+    mode: Literal["send_readback", "synthetic"]
+    reachable: bool = Field(description="The service returned any HTTP response.")
+    healthy: bool = Field(description="The health endpoint returned 2xx.")
+    delivery: Literal["delivered", "not_delivered", "not_attempted"]
+    failure_kind: FailureKind | None = None
+    error: str | None = None
+    http_status: int | None = None
+    delivery_latency_ms: float | None = None
+    steps: list[ProbeStep] = Field(default_factory=list)
+
+    @property
+    def ok(self) -> bool:
+        return self.healthy and self.delivery == "delivered"
+
+
 class RepairRequest(BaseModel):
     app: str = Field(description="Key in apps.toml, e.g. 'shopping'.")
     repo_path: str = Field(description="Local git repo that contains commit_sha. Read only.")
@@ -68,12 +108,17 @@ class RepairRequest(BaseModel):
         default_factory=dict, description="Repo-relative path -> content at commit_sha."
     )
     similar_incidents: list[PriorIncident] = Field(default_factory=list)
+    live_check: LiveCheckResult | None = Field(None, description="Failed live probe, when that is the evidence.")
+    service_logs: str = Field("", description="Recent service logs around the failure.")
 
 
 # --- Outputs ----------------------------------------------------------------
 
 
-EvidenceSource = Literal["ci_log", "reproduction", "recent_diff", "source_file", "similar_incident"]
+EvidenceSource = Literal[
+    "ci_log", "reproduction", "live_probe", "service_logs", "recent_diff", "source_file", "similar_incident",
+]
+FailureClass = Literal["code_bug", "infrastructure", "configuration", "unknown"]
 
 
 class Evidence(BaseModel):
@@ -99,6 +144,8 @@ class Diagnosis(BaseModel):
     failing_tests: list[str] = Field(description="Pytest node ids parsed from the CI log.")
     traceback_frames: list[TracebackFrame] = Field(default_factory=list)
     confidence: float
+    failure_class: FailureClass = "unknown"
+    next_diagnostic: str | None = Field(None, description="What to run next when this is not enough.")
     review_reason: str | None = None
 
 
@@ -133,6 +180,7 @@ class CandidateAttempt(BaseModel):
     changed_lines: int
     passed: bool
     reason: str
+    files: dict[str, str] = Field(default_factory=dict)
     reproduce_runs: list[TestRun] = Field(default_factory=list)
     suite: TestRun | None = None
 
@@ -148,6 +196,7 @@ class RepairResult(BaseModel):
     diagnosis: Diagnosis | None = None
     patch: str | None = Field(None, description="The chosen verified patch.")
     changed_files: list[str] = Field(default_factory=list)
+    patched_files: dict[str, str] = Field(default_factory=dict, description="Full content of changed files after the patch.")
     baseline: list[TestRun] = Field(default_factory=list, description="Failing tests on original code.")
     reproduce_after_patch: list[TestRun] = Field(default_factory=list)
     patched_suite: TestRun | None = Field(default=None, description="Full app suite after patch.")
