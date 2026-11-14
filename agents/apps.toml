@@ -1,0 +1,20 @@
+# Repair scope and fixed test commands for each demo app.
+# Paths are placeholders until Taha's Shopping and Messaging apps land; update
+# root/source_dirs/test_dir to match their layout.
+#
+# A patch may only modify files under source_dirs. Tests, CI workflows,
+# dependency manifests and secrets are always rejected, even inside source_dirs.
+
+[apps.shopping]
+root = "shopping"
+source_dirs = ["shopping/src"]
+test_dir = "tests"
+pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
+timeout_seconds = 120
+
+[apps.messaging]
+root = "message-platform"
+source_dirs = ["message-platform/src"]
+test_dir = "tests"
+pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
+timeout_seconds = 120
