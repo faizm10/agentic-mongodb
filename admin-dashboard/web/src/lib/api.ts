@@ -121,6 +121,16 @@ export type AgentActivity = {
   pr_url: string | null;
 };
 
+export type DependencyCheck = {
+  id: "github" | "mongodb" | "openai";
+  name: string;
+  status: "operational" | "degraded" | "down" | "not_configured";
+  summary: string;
+  action: string | null;
+  checked_at: string;
+  latency_ms: number | null;
+};
+
 export type Summary = {
   overall: { status: Status; label: string; affected_services: string[] };
   window: Window;

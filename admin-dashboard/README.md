@@ -296,6 +296,7 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 | `test_uptime_and_incidents.py` | 100% over a full day; degraded lowers uptime but not availability; **10 minutes of data isn't 30-day uptime**; gaps are unknown; unknown excluded and down counted; empty data; bars show unknown before monitoring and the worst state per bucket; latency ignores down; **one incident per ongoing outage**; storage rejects a second open incident; escalation; **recovery with duration**, then a new incident; failure threshold |
 | `test_storage.py` | **Persistence across reopen**; duplicate check ids rejected; ordered samples with timezones; lease semantics; retention purge; MongoDB TTL and unique indexes; dedicated collections (agents' `incidents` is read, never written); no credential leaks |
 | `test_api.py` | Envelope; unknown before any check; **independent statuses**; uptime computed from stored checks; detail, checks and latency endpoints; hand-off evidence and routes; stale → unknown; mutations without a token; idempotent links; **the full section-9 demo scenario** |
+| `test_dependencies.py` | GitHub reachability and repository access, Atlas ping, OpenAI API access, safe failure messages, and 30-second response caching |
 
 ---
 
@@ -304,6 +305,8 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout**. On the dashboard overview, choose one of six controls:
 
 When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher starts the three platforms but does not start the repair agent; run `python -m agents.orchestrator worker` separately after configuring MongoDB and the agent credentials.
+
+The **Agent dependencies** section checks GitHub, MongoDB Atlas, and OpenAI every 30 seconds and shows connection or access failures with a next step. GitHub reachability is checked even without an agent token; repository access is checked when `GITHUB_TOKEN` and `GITHUB_OWNER` are configured. MongoDB uses a read-only `ping` when `MONGODB_URI` is present. OpenAI checks API access when `OPENAI_API_KEY` is present; it does not run a model or incur generation costs. Missing settings appear as **Not configured**. The `/api/v1/dependencies` response never includes credentials, connection strings, or provider response bodies.
 
 | App | Controls | Effect |
 | --- | --- | --- |

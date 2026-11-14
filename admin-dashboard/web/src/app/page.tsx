@@ -6,6 +6,7 @@ import { Activity, ChevronRight, Clock3, Cpu, Database, Timer } from "lucide-rea
 import { IncidentTimeline } from "@/components/incidents";
 import { OutageControls } from "@/components/outage-controls";
 import { AgentActivityPanel } from "@/components/agent-activity";
+import { DependenciesPanel } from "@/components/dependencies";
 import { StatusLegend, UptimeBars } from "@/components/charts";
 import { UptimeFigure, uptimeBasis } from "@/components/uptime";
 import { ErrorPanel, Shell, Skeleton, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
@@ -152,6 +153,8 @@ export default function Overview() {
           <OutageControls services={data.services} onChange={reload} />
 
           <AgentActivityPanel activity={data.agent_activity} />
+
+          <DependenciesPanel />
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-muted">Services</h2>

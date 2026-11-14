@@ -9,6 +9,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import os
+import time
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
@@ -21,6 +22,7 @@ from pydantic import BaseModel, Field
 
 from . import __version__, demo_outages
 from .config import MonitorSettings, load_settings
+from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
 from .models import Incident, IncidentEvent, IncidentLink, ServiceConfig, ServiceState, Status, WorkerState
 from .storage import open_storage
@@ -179,6 +181,9 @@ def create_app(
     app = FastAPI(title="OpsRelay Uptime API", version=__version__, lifespan=lifespan)
     app.state.storage = storage
     app.state.monitor = monitor
+    dependency_lock = asyncio.Lock()
+    dependency_cache: list[DependencyCheck] | None = None
+    dependency_expires_at = 0.0
     app.add_middleware(
         CORSMiddleware,
         allow_origins=[o for o in os.environ.get("OPSRELAY_DASHBOARD_ORIGINS", "http://localhost:3300,http://127.0.0.1:3300").split(",") if o],
@@ -299,6 +304,16 @@ def create_app(
     @app.get("/api/v1/monitoring", response_model=Envelope[MonitoringHealth])
     def get_monitoring():
         return ok(monitoring(clock()))
+
+    @app.get("/api/v1/dependencies", response_model=Envelope[list[DependencyCheck]])
+    async def get_dependencies():
+        nonlocal dependency_cache, dependency_expires_at
+        if dependency_cache is None or time.monotonic() >= dependency_expires_at:
+            async with dependency_lock:
+                if dependency_cache is None or time.monotonic() >= dependency_expires_at:
+                    dependency_cache = await check_dependencies()
+                    dependency_expires_at = time.monotonic() + 30
+        return ok(dependency_cache)
 
     @app.get("/api/v1/summary", response_model=Envelope[Summary])
     def summary(window: Window = "24h"):
