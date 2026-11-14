@@ -109,3 +109,10 @@ def test_stock_is_decremented_and_enforced_across_orders(client, checkout_payloa
     expect_status(last, 201, check="api.checkout.exact_remaining", rule="the final chair must be purchasable")
     product = client.get(f"/api/products/{FORM_CHAIR}").json()
     assert product["available"] == 0 and product["in_stock"] is False
+
+
+def test_unsold_products_show_their_full_stock(client):
+    products = {p["id"]: p for p in client.get("/api/products").json()["products"]}
+    assert products[POLAR_CAMERA]["available"] == 3
+    assert products[ORGANIC_TEE]["available"] == 100
+    assert products[SUNGLASSES]["available"] == 0

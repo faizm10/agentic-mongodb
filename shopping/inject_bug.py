@@ -8,7 +8,7 @@ the existing test suite (and the live checkout health probe) catches the bug.
 Usage:
     python inject_bug.py list
     python inject_bug.py status
-    python inject_bug.py inject <quantity|discount|inventory>
+    python inject_bug.py inject <quantity|discount|inventory|images|stock>
     python inject_bug.py reset [<bug> | all]
     python inject_bug.py verify <bug>     # inject -> run pytest (expect failures) -> reset
 
@@ -70,6 +70,26 @@ BUGS: dict[str, Bug] = {
         symptom="Orders exceeding remaining stock are accepted, overselling low-stock products.",
         tests=("tests/test_inventory.py",),
         probe_check="inventory_oversell_guard",
+    ),
+    "images": Bug(
+        key="images",
+        title="Broken product image URLs (wrong CDN path prefix)",
+        file="backend/app/catalog.py",
+        original='_UNSPLASH = "https://images.unsplash.com/photo-"\n',
+        buggy='_UNSPLASH = "https://images.unsplash.com/photos/"\n',
+        symptom="Every product and category image points at a CDN path that does not exist, so no image loads.",
+        tests=("tests/test_health_and_catalog.py",),
+        probe_check="product_images",
+    ),
+    "stock": Bug(
+        key="stock",
+        title="Stock levels read the sold count instead of remaining stock",
+        file="backend/app/checkout.py",
+        original="        return {p.id: p.stock - int(sold.get(p.id, 0)) for p in self.catalog.products}\n",
+        buggy="        return {p.id: int(sold.get(p.id, 0)) for p in self.catalog.products}\n",
+        symptom="Products show as out of stock (0 left) and cannot be added to the cart.",
+        tests=("tests/test_inventory.py", "tests/test_health_and_catalog.py"),
+        probe_check="stock_levels",
     ),
 }
 

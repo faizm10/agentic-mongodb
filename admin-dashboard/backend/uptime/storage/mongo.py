@@ -345,3 +345,21 @@ class MongoStorage:
             except Exception:  # noqa: BLE001 - not Atlas (local mongod / mongomock): nothing to show
                 pass
         return out
+
+    def get_agent_findings(self, uptime_incident_id: str) -> dict[str, Any] | None:
+        """What the agent concluded about this uptime incident, for the dashboard assistant.
+
+        Only its summary fields: never raw evidence, logs or diffs.
+        """
+        doc = self.db[AGENT_INCIDENTS].find_one(
+            {"source": "live", "live.uptime_incident_id": uptime_incident_id},
+            {"_id": 0, "status": 1, "stage": 1, "status_reason": 1, "patch.summary": 1, "patch.root_cause": 1,
+             "pr.url": 1, "pr.number": 1, "review.pr_state": 1, "updated_at": 1},
+        )
+        if doc is None:
+            return None
+        patch, pr = doc.get("patch") or {}, doc.get("pr") or {}
+        return {"status": doc.get("status"), "stage": doc.get("stage"), "status_reason": doc.get("status_reason"),
+                "summary": patch.get("summary"), "root_cause": patch.get("root_cause"),
+                "pr_url": pr.get("url"), "pr_number": pr.get("number"),
+                "pr_state": (doc.get("review") or {}).get("pr_state"), "updated_at": doc.get("updated_at")}

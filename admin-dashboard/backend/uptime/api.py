@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, bad_deploys, demo_outages
+from . import __version__, assistant, bad_deploys, demo_outages
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -118,6 +118,8 @@ class AgentActivity(BaseModel):
     updated_at: datetime | None = None
     latest_action: AgentAction | None = None
     pr_url: str | None = None
+    # After the agent's PR is merged, whether a person confirmed that it fixed the problem.
+    fix_confirmation: Literal["confirmed", "disputed"] | None = None
 
 
 class LearningStrategy(BaseModel):
@@ -212,6 +214,10 @@ class BadDeployIn(BaseModel):
     scenario: int = Field(ge=1, le=3)
 
 
+class FixConfirmationIn(BaseModel):
+    resolved: bool
+
+
 # -------------------------------------------------------------------- the app
 def create_app(
     storage: Storage | None = None,
@@ -220,6 +226,7 @@ def create_app(
     embed_worker: bool = False,
     clock=utcnow,
     monitor_kwargs: dict[str, Any] | None = None,
+    assistant_transport: Any = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     storage = storage or open_storage(retention_days=settings.retention_days,
@@ -341,7 +348,34 @@ def create_app(
         return AgentActivity(incident_id=incident.id, service_name=name, state=state,
                              stage=run.get("stage"), started_at=run.get("created_at"),
                              updated_at=run.get("updated_at"), latest_action=run.get("latest_action"),
-                             pr_url=pr_url if isinstance(pr_url, str) and pr_url.startswith("https://") else None)
+                             pr_url=pr_url if isinstance(pr_url, str) and pr_url.startswith("https://") else None,
+                             fix_confirmation=fix_confirmation(incident))
+
+    def fix_confirmation(incident: Incident) -> str | None:
+        answers = [e.type for e in incident.events if e.type in ("fix_confirmed", "fix_disputed")]
+        return None if not answers else "confirmed" if answers[-1] == "fix_confirmed" else "disputed"
+
+    def assistant_context(focus: str | None, now: datetime) -> dict[str, Any]:
+        """What the dashboard assistant may know: status, open incidents and the agent's findings."""
+        incidents = storage.list_incidents(state="open")
+        if focus and not any(i.id == focus for i in incidents):
+            focused = storage.get_incident(focus)
+            if focused is not None:
+                incidents.append(focused)
+        names = {s.id: s.name for s in services()}
+        return {
+            "now": now,
+            "services": [{"name": o.name, "status": o.current.status, "summary": o.current.summary}
+                         for o in (overview(s, "24h", now, bars=False) for s in services())],
+            "viewing_incident": focus,
+            "incidents": [{
+                "id": i.id, "app": names.get(i.service_id, i.service_id), "state": i.state, "severity": i.severity,
+                "title": i.title, "started_at": i.started_at, "resolved_at": i.resolved_at,
+                "failed_checks": assistant.plain_failures(i.evidence),
+                "fix_confirmation_by_person": fix_confirmation(i),
+                "repair_agent": storage.get_agent_findings(i.id),
+            } for i in incidents],
+        }
 
     def monitoring(now: datetime) -> MonitoringHealth:
         worker = storage.get_worker()
@@ -556,6 +590,44 @@ def create_app(
         incident.events.append(IncidentEvent(at=now, type="acknowledged", message=f"Acknowledged by {body.by}. {body.note}".strip()))
         storage.save_incident(incident)
         return ok(incident_out(incident, now))
+
+    @app.post("/api/v1/incidents/{incident_id}/fix-confirmation", response_model=Envelope[IncidentOut])
+    def confirm_fix(incident_id: str, body: FixConfirmationIn):
+        """A person says whether the agent's merged PR fixed the problem.
+
+        Yes applies the fix to the running checkout (the bad deploy is restored locally; main
+        already has the fix, so nothing is pushed) and asks for a fresh check, which resolves the
+        incident once the probe passes. No records it and leaves the incident open.
+        """
+        incident = incident_or_404(incident_id)
+        findings = storage.get_agent_findings(incident_id)
+        if not findings or findings.get("status") != "resolved":
+            raise HTTPException(409, "The repair PR for this incident has not been merged yet.")
+        if body.resolved and incident.service_id in bad_deploys.APPS:
+            try:
+                bad_deploys.restore(incident.service_id)
+            except bad_deploys.BadDeployError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except OSError as exc:
+                logger.error("Cannot apply the merged fix for %s: %s", incident.service_id, exc)
+                raise HTTPException(503, "The merged fix could not be applied to the running app.") from exc
+        now = clock()
+        incident.events.append(IncidentEvent(
+            at=now, type="fix_confirmed" if body.resolved else "fix_disputed",
+            message="A person confirmed the merged fix resolved the problem; applying it to the running app."
+            if body.resolved else "A person reported the problem is still happening after the fix was merged."))
+        storage.save_incident(incident)
+        storage.request_check(now)
+        return ok(incident_out(incident, now))
+
+    @app.post("/api/v1/assistant/chat", response_model=Envelope[dict[str, Any]])
+    async def assistant_chat(body: assistant.ChatIn):
+        try:
+            reply = await assistant.answer(assistant_context(body.incident_id, clock()), body.messages,
+                                           transport=assistant_transport)
+        except assistant.AssistantError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return ok({"reply": reply})
 
     @app.post("/api/v1/incidents/{incident_id}/links", response_model=Envelope[IncidentOut])
     def add_link(incident_id: str, body: LinkIn):

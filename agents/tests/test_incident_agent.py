@@ -234,6 +234,25 @@ def test_service_down_goes_to_a_human_without_model_or_code_change(db, agent):
     assert llm.calls == [] and github.create_calls == 0
 
 
+def test_third_party_outage_goes_to_a_human_without_model_or_code_change(db, agent):
+    orch, intake, github, llm, _ = agent
+    doc = uptime_doc(m.utcnow())
+    doc["evidence"]["latest_failure"]["probes"]["functional"]["details"]["failures"] = [
+        {"check": "payment_provider", "component": "payments", "source": "external: Stripe API",
+         "reason": "Stripe API is unavailable (HTTP 503 from api.stripe.com).",
+         "expected": {"stripe_api": "available"}, "actual": {"stripe_api": "503 Service Unavailable"}}]
+    db[UPTIME_INCIDENTS].insert_one(doc)
+    [iid] = intake.poll()
+
+    orch.run_pending()
+
+    inc = m.incidents(db).find_one({"_id": iid})
+    assert inc["status"] == m.STATUS_NEEDS_REVIEW
+    assert "third-party dependency (Stripe API)" in inc["status_reason"]
+    assert "status page" in inc["patch"]["investigation"]
+    assert llm.calls == [] and github.create_calls == 0
+
+
 def test_handoff_mapping_matches_taha_contract():
     doc = uptime_doc(m.utcnow())
     live = handoff_from_uptime(doc)

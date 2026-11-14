@@ -244,6 +244,8 @@ Base URL `http://localhost:8300`. Every success is `{"data": …, "meta": {"gene
 | POST | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Push a real catalog bug to the base branch (`{"scenario": 1-3}`); see [Demo outage controls](#demo-outage-controls) |
 | DELETE | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Undo the live bad deploy: restore the checkout and push a revert if the fix is not merged |
 | POST | `/api/v1/incidents/{id}/acknowledge` | `{"by", "note"}` |
+| POST | `/api/v1/incidents/{id}/fix-confirmation` | `{"resolved": bool}` after the agent's PR is merged. `true` applies the fix to the running app and rechecks; `false` records that it is still broken |
+| POST | `/api/v1/assistant/chat` | `{"messages": [{"role", "content"}], "incident_id"?}`: plain-language answers about current incidents (needs `OPENAI_API_KEY`) |
 | POST | `/api/v1/incidents/{id}/links` | `{"kind": "github_actions_run"\|"repair_pr"\|"other", "url": "https://…", "label"}`: idempotent per URL |
 
 Mutation endpoints are unauthenticated. Don't expose the API beyond localhost without putting your own auth in front of it.
@@ -305,7 +307,7 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 
 ## Demo outage controls
 
-Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is.
+Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is. One NovaMart control is different: **Payments failing (Stripe down)** simulates a payment-provider outage. It ships no code; the checkout probe reports the Stripe API as an `external:` dependency, and the agent records that there is no code fix instead of opening a PR.
 
 Shipping one commits the bug on top of `origin/main` with a routine-looking message and **pushes it to `main`**, then applies the same change to the running checkout so the dev servers serve it. Your current branch, index and other files are not touched; the commit is built in a temporary index. The checkout probe fails within one cycle, the AI agent picks up the incident, reproduces it with the app's tests, and opens a draft fix PR against `main`. The CI run that fails on the same commit is skipped while the live incident covers it, so you get one PR.
 
@@ -316,6 +318,10 @@ The **Agent dependencies** section checks GitHub, MongoDB Atlas, and OpenAI ever
 The **AI learning** section shows what the repair agent's reinforcement-learning fix policy (`agents/rl_policy.py`) has learned. It reads `rl_experiences`, `rl_training_runs` and `mock_incidents` read-only: first-pick accuracy before and after training, the learning curve, success rate per fix strategy for each app, and whether the Atlas Vector Search indexes are ready. It appears once `python -m agents.rl_policy seed` and `train` have been run against the same database.
 
 When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher also starts the repair agent worker when `.env` sets `MONGODB_URI`. Set `DEV_AGENT=0` to skip it, or run `python -m agents.orchestrator worker` yourself.
+
+When the agent's PR is merged (the agent checks GitHub every 30 seconds), its panel asks **Did this fix the problem?** **Yes** applies the merged fix to the running app and asks for a new check, so the incident resolves once the probe passes. **No** records that it is still broken and leaves the incident open.
+
+**Ask the assistant** (bottom right on every page) answers questions about current incidents and the agent's progress in everyday words. On an incident page it focuses on that incident. It uses `OPENAI_API_KEY` (model: `OPSRELAY_ASSISTANT_MODEL`, else `OPENAI_MODEL`, else `gpt-4.1-mini`) and only sees service status, failed checks without code locations, and the agent's summary. It avoids file and code details unless asked for technical details.
 
 The older flag-file outages (`/api/v1/demo/outages`, no code change) remain in the API. The agent reports them as configuration and hands them to a person, because there is no code to fix.
 

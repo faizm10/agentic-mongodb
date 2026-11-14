@@ -14,18 +14,18 @@ const GROUPS: { id: ServiceId; name: string; actions: { scenario: 1 | 2 | 3; lab
     id: "novamart",
     name: "NovaMart",
     actions: [
-      { scenario: 1, label: "Wrong cart totals" },
-      { scenario: 2, label: "Broken promo codes" },
-      { scenario: 3, label: "Overselling stock" },
+      { scenario: 1, label: "Images not loading" },
+      { scenario: 2, label: "Payments failing (Stripe down)" },
+      { scenario: 3, label: "Everything out of stock" },
     ],
   },
   {
     id: "novaconnect",
     name: "NovaConnect",
     actions: [
-      { scenario: 1, label: "Duplicate messages" },
-      { scenario: 2, label: "Wrong delivery status" },
-      { scenario: 3, label: "Messages out of order" },
+      { scenario: 1, label: "Can't send messages" },
+      { scenario: 2, label: "Not receiving messages" },
+      { scenario: 3, label: "Sending and receiving down" },
     ],
   },
 ];
@@ -82,7 +82,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         </span>
         <div className="min-w-0 flex-1">
           <h2 id="outage-controls-title" className="text-sm font-semibold">Demo outage controls</h2>
-          <p className="mt-0.5 text-xs text-muted">Ship a bad deploy to an app, then watch the AI agent find and fix it. Restore it when finished.</p>
+          <p className="mt-0.5 text-xs text-muted">Break an app the way real outages happen: a bad deploy the AI agent can fix, or a payment provider going down. Restore it when finished.</p>
         </div>
       </div>
       <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">

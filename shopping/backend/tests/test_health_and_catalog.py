@@ -1,5 +1,7 @@
 """Health endpoints, the safe checkout probe, and catalog browsing."""
 
+import re
+
 import pytest
 
 from app.checkout import CartItem
@@ -26,6 +28,8 @@ def test_checkout_probe_is_healthy(client):
         "checkout_quote_totals",
         "inventory_oversell_guard",
         "catalog_integrity",
+        "product_images",
+        "stock_levels",
         "order_store_access",
         "probe_has_no_side_effects",
     }
@@ -69,6 +73,16 @@ def test_catalog_has_realistic_products(client):
     assert len({p["id"] for p in products}) == len(products)
     assert len({p["slug"] for p in products}) == len(products)
     assert all(p["price_cents"] > 0 and p["image"].startswith("https://") for p in products)
+
+
+@pytest.mark.opsrelay(component="catalog", capability="browse")
+def test_product_and_category_images_use_cdn_photo_urls(client):
+    image = re.compile(r"^https://images\.unsplash\.com/photo-\d+-[0-9a-f]+$")
+    products = client.get("/api/products").json()["products"]
+    categories = client.get("/api/categories").json()
+    bad = [p["id"] for p in products if not image.match(p["image"])]
+    bad += [c["slug"] for c in categories if not image.match(c["image"])]
+    assert bad == [], f"images that the CDN cannot serve: {bad}"
 
 
 @pytest.mark.opsrelay(component="catalog", capability="browse")

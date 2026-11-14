@@ -122,7 +122,8 @@ class ServiceState(Model):
 
 class IncidentEvent(Model):
     at: UTCDateTime
-    type: Literal["opened", "escalated", "deescalated", "failure_changed", "resolved", "acknowledged", "link_added"]
+    type: Literal["opened", "escalated", "deescalated", "failure_changed", "resolved", "acknowledged", "link_added",
+                  "fix_confirmed", "fix_disputed"]
     status: Status | None = None
     message: str
     check_id: str | None = None
