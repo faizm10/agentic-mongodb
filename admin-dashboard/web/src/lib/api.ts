@@ -119,6 +119,7 @@ export type AgentActivity = {
   updated_at: string | null;
   latest_action: { stage: string; outcome: string; at: string } | null;
   pr_url: string | null;
+  fix_confirmation: "confirmed" | "disputed" | null;
 };
 
 export type DependencyCheck = {

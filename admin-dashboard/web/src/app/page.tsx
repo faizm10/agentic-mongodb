@@ -152,7 +152,7 @@ export default function Overview() {
 
           <OutageControls services={data.services} onChange={reload} />
 
-          <AgentActivityPanel activity={data.agent_activity} />
+          <AgentActivityPanel activity={data.agent_activity} onChange={reload} />
 
           <DependenciesPanel />
 

@@ -6,7 +6,13 @@ import { ArrowLeft, Bot, ChevronDown, ExternalLink, GitPullRequest, Workflow } f
 import { RouteBadge } from "@/components/incidents";
 import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill } from "@/components/ui";
 import { type Incident, isDemoIncident, usePoll } from "@/lib/api";
-import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
+import { FAILURE_LABELS, clock, duration, useNow } from "@/lib/format";
+import { plainFailure } from "@/lib/plain";
+
+const NEXT_STEP: Record<Incident["investigation_route"], string> = {
+  investigate: "The app is running, but something it does is giving wrong results. The AI agent will look for the cause, test a fix, and send it for review.",
+  service_health: "The app isn't responding at all. That usually needs someone to restart or redeploy it rather than a code fix.",
+};
 
 type Handoff = Record<string, unknown> & {
   probe_failures: { check: string; reason: string; source?: string | null; expected?: unknown; actual?: unknown }[];
@@ -23,6 +29,8 @@ const EVENT_LABEL: Record<string, string> = {
   resolved: "Recovered",
   acknowledged: "Acknowledged",
   link_added: "Link added",
+  fix_confirmed: "Fix confirmed",
+  fix_disputed: "Still broken after the fix",
 };
 
 export default function IncidentPage({ params }: { params: Promise<{ id: string }> }) {
@@ -96,12 +104,13 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
 
             <div className="space-y-6">
               {!demo && <section className="panel p-6">
-                <h2 className="flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-muted" /> AI investigation hand-off</h2>
-                <p className="mt-2 text-sm text-muted">{ROUTE_LABELS[i.investigation_route].hint}</p>
-                {i.evidence.route_reason && <p className="mt-2 text-xs leading-relaxed text-faint">{i.evidence.route_reason}</p>}
+                <h2 className="flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-muted" /> What happens next</h2>
+                <p className="mt-2 text-sm text-muted">{NEXT_STEP[i.investigation_route]}</p>
                 {handoff.data && (
-                  <>
-                    <p className="mt-4 text-xs">
+                  <details className="mt-4 text-xs">
+                    <summary className="cursor-pointer font-medium text-muted hover:text-ink">Technical notes</summary>
+                    {i.evidence.route_reason && <p className="mt-3 leading-relaxed text-faint">{i.evidence.route_reason}</p>}
+                    <p className="mt-3">
                       Code-repair candidate:{" "}
                       <span className={handoff.data.code_repair_candidate ? "font-semibold text-warn" : "text-muted"}>
                         {handoff.data.code_repair_candidate ? "yes, reproduce first" : "no"}
@@ -111,7 +120,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted">
                       {handoff.data.next_steps.map((s) => <li key={s}>{s}</li>)}
                     </ul>
-                  </>
+                  </details>
                 )}
               </section>}
 
@@ -147,31 +156,64 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
           </div>
 
           {!demo && <section className="panel p-6">
-            <h2 className="text-sm font-semibold">Evidence</h2>
+            <h2 className="text-sm font-semibold">What's wrong</h2>
             {handoff.data && handoff.data.probe_failures.length > 0 ? (
               <ul className="mt-4 space-y-3">
-                {handoff.data.probe_failures.map((f) => (
-                  <li key={f.check} className="rounded-xl border border-crit/25 bg-crit/5 p-4 text-sm">
-                    <p className="font-mono text-[13px] font-medium">{f.check}</p>
-                    <p className="mt-1 text-muted">{f.reason}</p>
-                    {f.source && <p className="mt-1.5 font-mono text-xs text-accent">{f.source}</p>}
-                    <div className="scroll-x mt-2 font-mono text-[11.5px]">
-                      <p className="whitespace-nowrap text-ok">expected {JSON.stringify(f.expected)}</p>
-                      <p className="whitespace-nowrap text-crit">actual&nbsp;&nbsp; {JSON.stringify(f.actual)}</p>
-                    </div>
-                  </li>
-                ))}
+                {handoff.data.probe_failures.map((f) => {
+                  const plain = plainFailure(f);
+                  return (
+                    <li key={f.check} className="rounded-xl border border-crit/25 bg-crit/5 p-4 text-sm">
+                      <p className="font-medium text-ink">{plain.title}</p>
+                      <p className="mt-1 text-muted">{plain.explanation}</p>
+                      {plain.rows.length > 0 && (
+                        <div className="scroll-x mt-3">
+                          <table className="w-full min-w-[320px] text-left text-xs">
+                            <thead className="text-faint">
+                              <tr>
+                                <th className="py-1 pr-4 font-medium">Example</th>
+                                <th className="py-1 pr-4 font-medium">Should be</th>
+                                <th className="py-1 font-medium">Actually was</th>
+                              </tr>
+                            </thead>
+                            <tbody>
+                              {plain.rows.map((row) => (
+                                <tr key={row.label} className="border-t border-line/60">
+                                  <td className="py-1.5 pr-4 text-muted">{row.label}</td>
+                                  <td className="py-1.5 pr-4 text-ok">{row.expected}</td>
+                                  <td className="py-1.5 font-medium text-crit">{row.actual}</td>
+                                </tr>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+                      )}
+                    </li>
+                  );
+                })}
               </ul>
             ) : (
               <p className="mt-3 text-sm text-muted">{i.summary}</p>
             )}
             <button onClick={() => setShowJson((v) => !v)} className="mt-5 inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-ink" aria-expanded={showJson}>
-              <ChevronDown className={`h-3.5 w-3.5 transition ${showJson ? "rotate-180" : ""}`} /> Structured hand-off payload (opsrelay.uptime_incident.v1)
+              <ChevronDown className={`h-3.5 w-3.5 transition ${showJson ? "rotate-180" : ""}`} /> Technical details
             </button>
             {showJson && handoff.data && (
-              <pre className="scroll-x mt-3 max-h-[480px] overflow-y-auto rounded-xl border border-line bg-page p-4 font-mono text-[11.5px] leading-relaxed text-muted">
-                {JSON.stringify(handoff.data, null, 2)}
-              </pre>
+              <div className="mt-3 space-y-3">
+                {handoff.data.probe_failures.map((f) => (
+                  <div key={f.check} className="rounded-xl border border-line p-3 text-xs">
+                    <p className="font-mono font-medium">{f.check}</p>
+                    <p className="mt-1 text-muted">{f.reason}</p>
+                    {f.source && <p className="mt-1 font-mono text-accent">{f.source}</p>}
+                    <div className="scroll-x mt-2 font-mono text-[11.5px]">
+                      <p className="whitespace-nowrap text-ok">expected {JSON.stringify(f.expected)}</p>
+                      <p className="whitespace-nowrap text-crit">actual&nbsp;&nbsp; {JSON.stringify(f.actual)}</p>
+                    </div>
+                  </div>
+                ))}
+                <pre className="scroll-x max-h-[480px] overflow-y-auto rounded-xl border border-line bg-page p-4 font-mono text-[11.5px] leading-relaxed text-muted">
+                  {JSON.stringify(handoff.data, null, 2)}
+                </pre>
+              </div>
             )}
           </section>}
         </div>
