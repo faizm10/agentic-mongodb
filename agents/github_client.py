@@ -1,10 +1,12 @@
-"""GitHub REST API client (Developer 1) - Phase 1: authentication + read-only calls.
+"""GitHub REST API client (Developer 1): authentication, read calls and thin write calls.
 
 Role in the project
 -------------------
 This is the only module that talks to GitHub. The monitor uses it to find failed
 CI runs, and ``get_failure_context`` uses it to gather everything Developer 2's AI
-needs (logs, commit, source files). Phase 2 will add branch/commit/PR methods here.
+needs (logs, commit, source files). The branch / commit / PR methods at the bottom of
+``GitHubClient`` are deliberately thin: the safety logic (check before write, verify
+after write, never duplicate) lives in ``github_publisher.py``.
 
 Design rules
 ------------
@@ -14,6 +16,8 @@ Design rules
     GitHubAuthError    401 / missing permission
     GitHubNotFound     404
     GitHubRateLimited  rate limit hit
+    GitHubConflict     409
+    GitHubValidationError  422 (e.g. "Reference already exists")
     GitHubUnavailable  timeout, network error, 5xx  -> OUTCOME UNKNOWN for writes
 """
 from __future__ import annotations
@@ -26,15 +30,19 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Optional
+from urllib.parse import quote
 
 import httpx
 
 from .github_types import (
+    BranchInfo,
     ChangedFile,
     CommitInfo,
     FailedJob,
     FailureContext,
+    PullRequestInfo,
     RepoFile,
+    app_root,
     application_for_workflow_path,
     make_incident_id,
 )
@@ -74,6 +82,14 @@ class GitHubNotFound(GitHubError):
 
 class GitHubRateLimited(GitHubError):
     """Primary or secondary rate limit."""
+
+
+class GitHubConflict(GitHubError):
+    """409."""
+
+
+class GitHubValidationError(GitHubError):
+    """422: GitHub understood the request but refused it (already exists, no diff, bad sha...)."""
 
 
 class GitHubUnavailable(GitHubError):
@@ -260,7 +276,14 @@ class GitHubClient:
         if resp.status_code < 400:
             return resp
         try:
-            message = resp.json().get("message", "")
+            body = resp.json()
+            message = body.get("message", "")
+            errors = body.get("errors")
+            if errors:
+                message += " " + "; ".join(
+                    (e.get("message") or e.get("code") or "") if isinstance(e, dict) else str(e)
+                    for e in errors
+                )
         except Exception:
             message = resp.text[:200]
         where = f"{method} {path} -> HTTP {resp.status_code}: {message}"
@@ -277,6 +300,10 @@ class GitHubClient:
             raise GitHubAuthError(f"{where} (token lacks permission; needs: {needed})", status)
         if status == 404:
             raise GitHubNotFound(where, status)
+        if status == 409:
+            raise GitHubConflict(where, status)
+        if status == 422:
+            raise GitHubValidationError(where, status)
         raise GitHubError(where, status)
 
     def _get_json(self, path: str, **params: Any) -> Any:
@@ -432,7 +459,8 @@ class GitHubClient:
 
         # 2. The commit under test and the files it touched
         commit = self.get_commit(commit_sha)
-        prefix = f"{application}/"
+        root = app_root(application)
+        prefix = f"{root}/"
         in_app = [f for f in commit.files if f.path.startswith(prefix)]
         changed = in_app or commit.files
         for f in changed:
@@ -441,7 +469,7 @@ class GitHubClient:
 
         # 3. Source files: changed files first, then files named in the log
         candidates = [f.path for f in changed if f.status != "removed"]
-        for path in extract_log_paths(logs, application):
+        for path in extract_log_paths(logs, root):
             if path not in candidates:
                 candidates.append(path)
         sources: list[RepoFile] = []
@@ -472,6 +500,102 @@ class GitHubClient:
             changed_files=changed,
             source_files=sources,
         )
+
+    # -- Phase 2: branches, commits, pull requests (thin wrappers) ----------- #
+    # Writes are never auto-retried by ``_request``. github_publisher.py decides what
+    # to do after an ambiguous failure by *reading GitHub first*.
+
+    def get_branch(self, name: str) -> Optional[BranchInfo]:
+        """The branch and its head sha, or ``None`` if it does not exist."""
+        try:
+            data = self._get_json(f"{self._repo}/git/ref/heads/{quote(name, safe='/')}")
+        except GitHubNotFound:
+            return None
+        return BranchInfo(name=name, sha=data["object"]["sha"])
+
+    def create_branch(self, name: str, base_sha: str) -> BranchInfo:
+        data = self._request(
+            "POST", f"{self._repo}/git/refs", json={"ref": f"refs/heads/{name}", "sha": base_sha}
+        ).json()
+        return BranchInfo(name=name, sha=data["object"]["sha"])
+
+    def get_tree_sha(self, commit_sha: str) -> str:
+        """Tree sha of a commit (needed to build a new commit on top of it)."""
+        return self._get_json(f"{self._repo}/git/commits/{commit_sha}")["tree"]["sha"]
+
+    def create_tree(self, base_tree: str, files: dict[str, str]) -> str:
+        """New tree = ``base_tree`` with ``files`` ({path: full content}) replaced."""
+        entries = [
+            {"path": path, "mode": "100644", "type": "blob", "content": content}
+            for path, content in files.items()
+        ]
+        data = self._request(
+            "POST", f"{self._repo}/git/trees", json={"base_tree": base_tree, "tree": entries}
+        ).json()
+        return data["sha"]
+
+    def create_git_commit(self, message: str, tree_sha: str, parents: list[str]) -> str:
+        data = self._request(
+            "POST",
+            f"{self._repo}/git/commits",
+            json={"message": message, "tree": tree_sha, "parents": parents},
+        ).json()
+        return data["sha"]
+
+    def update_branch(self, name: str, sha: str, *, force: bool = False) -> None:
+        """Move a branch to ``sha``. Without ``force`` GitHub rejects non-fast-forwards (422)."""
+        self._request(
+            "PATCH",
+            f"{self._repo}/git/refs/heads/{quote(name, safe='/')}",
+            json={"sha": sha, "force": force},
+        )
+
+    def compare_files(self, base: str, head: str) -> list[str]:
+        """Paths that differ between two commits (renames list both names)."""
+        data = self._get_json(f"{self._repo}/compare/{base}...{head}")
+        paths: list[str] = []
+        for f in data.get("files", []):
+            paths.append(f["filename"])
+            if f.get("previous_filename"):
+                paths.append(f["previous_filename"])
+        return paths
+
+    @staticmethod
+    def _pr_from(d: dict[str, Any]) -> PullRequestInfo:
+        state = "merged" if d.get("merged_at") or d.get("merged") else d.get("state", "open")
+        return PullRequestInfo(
+            number=d["number"],
+            url=d.get("html_url", ""),
+            state=state,
+            head_ref=d["head"]["ref"],
+            head_sha=d["head"]["sha"],
+            base_ref=d["base"]["ref"],
+            title=d.get("title", ""),
+        )
+
+    def find_pr(self, branch: str, state: str = "all") -> Optional[PullRequestInfo]:
+        """The pull request opened from ``branch`` (any state), or ``None``."""
+        data = self._get_json(
+            f"{self._repo}/pulls",
+            head=f"{self.config.owner}:{branch}",
+            state=state,
+            per_page=10,
+        )
+        for item in data:
+            if item["head"]["ref"] == branch:
+                return self._pr_from(item)
+        return None
+
+    def create_pr(self, branch: str, title: str, body: str) -> PullRequestInfo:
+        data = self._request(
+            "POST",
+            f"{self._repo}/pulls",
+            json={"title": title, "head": branch, "base": self.config.base_branch, "body": body},
+        ).json()
+        return self._pr_from(data)
+
+    def get_pr(self, number: int) -> PullRequestInfo:
+        return self._pr_from(self._get_json(f"{self._repo}/pulls/{number}"))
 
 
 # --------------------------------------------------------------------------- #
@@ -507,3 +631,19 @@ def get_file(path: str, ref: Optional[str] = None) -> RepoFile:
 
 def get_failure_context(run_id: int, attempt: Optional[int] = None) -> FailureContext:
     return get_client().get_failure_context(run_id, attempt)
+
+
+def get_branch(name: str) -> Optional[BranchInfo]:
+    return get_client().get_branch(name)
+
+
+def create_branch(name: str, base_sha: str) -> BranchInfo:
+    return get_client().create_branch(name, base_sha)
+
+
+def find_pr(branch: str) -> Optional[PullRequestInfo]:
+    return get_client().find_pr(branch)
+
+
+def create_pr(branch: str, title: str, body: str) -> PullRequestInfo:
+    return get_client().create_pr(branch, title, body)

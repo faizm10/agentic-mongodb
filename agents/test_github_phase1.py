@@ -19,7 +19,12 @@ from agents.github_client import (
     clean_logs,
     extract_log_paths,
 )
-from agents.github_types import fix_branch_name, make_incident_id
+from agents.github_types import (
+    app_root,
+    application_for_workflow_path,
+    fix_branch_name,
+    make_incident_id,
+)
 from agents.monitor import FailureMonitor
 
 CONFIG = GitHubConfig(token="ghp_secret", owner="acme", repo="agentic-mongodb", base_branch="main")
@@ -123,7 +128,7 @@ def test_detect_failures_filters_and_deduplicates():
 
     events = monitor.detect_failures()
     assert [e.incident_id for e in events] == ["101-1", "102-1", "107-2"]
-    assert {e.application for e in events} == {"shopping", "message-platform"}
+    assert {e.application for e in events} == {"shopping", "messaging"}
     assert events[0].to_dict()["incidentId"] == "101-1"
 
     assert monitor.detect_failures() == []          # already seen
@@ -198,3 +203,24 @@ def test_get_failure_context_end_to_end():
 def test_incident_and_branch_naming():
     assert make_incident_id(123456789, 1) == "123456789-1"
     assert fix_branch_name("123456789-1") == "agent/fix-123456789-1"
+
+
+def test_messaging_uses_app_key_but_message_platform_folder():
+    assert application_for_workflow_path(".github/workflows/messaging-ci.yml") == "messaging"
+    assert app_root("messaging") == "message-platform"
+    logs = 'File "/home/runner/work/r/r/message-platform/src/send.py", line 3, in send'
+    assert extract_log_paths(logs, "message-platform") == ["message-platform/src/send.py"]
+
+
+def test_failure_context_converts_to_failed_run():
+    from agents.github_types import FailureContext
+
+    ctx = FailureContext(
+        incident_id="101-1", application="shopping", workflow_run_id=101, run_attempt=1,
+        commit_sha="abc123", failed_job="backend", workflow_url="u",
+        logs="FAILED tests/test_discounts.py::test_welcome10 - AssertionError\nFAILED tests/test_discounts.py::test_welcome10 - x\n",
+    )
+    run = ctx.to_failed_run("acme/agentic-mongodb")
+    assert run["repo"] == "acme/agentic-mongodb" and run["app"] == "shopping"
+    assert run["run_id"] == 101 and run["commit_sha"] == "abc123"
+    assert run["failed_tests"] == ["tests/test_discounts.py::test_welcome10"]  # de-duplicated
