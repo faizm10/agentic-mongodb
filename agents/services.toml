@@ -1,0 +1,18 @@
+# Live checks: one-shot reachability + send-and-deliver probes against running services.
+# The probe contract is documented in agents/README.md ("Live check probe contract").
+#
+# base_url precedence: --url / base_url= argument  >  OPSRELAY_<SERVICE>_URL env  >  this file.
+# timeout_seconds precedence: --timeout / timeout= argument  >  OPSRELAY_LIVE_TIMEOUT env  >  this file.
+
+[services.messaging]
+app = "messaging"                      # key in apps.toml, used for diagnosis and repair
+base_url = "http://127.0.0.1:8002"     # placeholder until Taha's Messaging deploy URL exists
+timeout_seconds = 5                    # per HTTP request
+mode = "send_readback"                 # or "synthetic" if the app runs its own probe
+health_path = "/health"
+send_path = "/probe/messages"
+readback_path = "/probe/inbox/{inbox}"
+synthetic_path = "/probe/delivery"
+test_inbox = "opsrelay-probe"          # dedicated inbox, never a real user's
+delivery_wait_seconds = 10             # how long to poll read-back for the exact probe id
+poll_interval_seconds = 0.5

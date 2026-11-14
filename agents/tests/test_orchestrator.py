@@ -150,3 +150,26 @@ def test_transient_error_retries(db):
     assert inc["status"] == m.STATUS_OPEN and inc["attempts"] == 1
     assert inc["stage"] == "memory_retrieved"  # didn't redo or lose earlier work
     assert orch.run_incident(iid)["status"] == m.STATUS_AWAITING_MERGE
+
+
+def test_monitor_adapter_maps_hamza_events(db):
+    from types import SimpleNamespace as NS
+
+    from agents.github_types import FailureEvent
+
+    ev = FailureEvent(incident_id="77-1", application="message-platform", workflow_run_id=77,
+                      run_attempt=1, commit_sha="deadbeefcafe", workflow_name="CI",
+                      workflow_file="messaging-ci.yml", branch="main", workflow_url="u")
+
+    class Mon:
+        forgotten = []
+        def detect_failures(self): return [ev]
+        def forget(self, iid): self.forgotten.append(iid)
+
+    client = NS(config=NS(owner="faizm10", repo="agentic-mongodb"),
+                get_failure_context=lambda run_id, attempt: NS(logs="FAILED test_x"))
+    [run] = o.MonitorAdapter(client, Mon()).poll_failed_runs()
+    assert run["app"] == "messaging" and run["repo"] == "faizm10/agentic-mongodb"
+    assert run["failed_logs"] == "FAILED test_x" and run["run_id"] == 77
+    iid, created = o.ingest_failed_run(run, db=db)
+    assert created and o.branch_for(m.incidents(db).find_one({"_id": iid})) == "agent/fix-77-1"

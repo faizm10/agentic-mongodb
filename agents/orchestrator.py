@@ -16,7 +16,7 @@ Guarantees
 
 Teammate contracts (duck-typed)
 -------------------------------
-Hamza  monitor.poll_failed_runs() -> list[FailedRun]
+Hamza  monitor: FailureMonitor.detect_failures() (wrapped by MonitorAdapter below)
        github.find_pr(repo, branch) -> {"number", "url", ...} | None
        github.open_draft_pr(repo, branch, base_sha, title, body, patch) -> {"number", "url"}
            (must create branch from base_sha if missing, commit patch["files"], open draft PR)
@@ -36,6 +36,7 @@ import os
 import socket
 import time
 import uuid
+from pathlib import Path
 from datetime import timedelta
 from typing import Any, Protocol
 
@@ -76,8 +77,12 @@ def incident_id_for(run: dict) -> str:
 
 
 def branch_for(inc: dict) -> str:
-    """Deterministic repair branch - same incident always maps to the same branch."""
-    return f"opsrelay/fix-{inc['app']}-{inc['run_id']}-{inc['run_attempt']}"
+    """Deterministic repair branch - same incident always maps to the same branch.
+
+    Uses Hamza's convention (agent/fix-<run_id>-<attempt>) so his monitor ignores
+    CI runs on the agent's own fix branches.
+    """
+    return f"agent/fix-{inc['run_id']}-{inc['run_attempt']}"
 
 
 def crash_point(name: str) -> None:
@@ -361,14 +366,52 @@ def _pr_body(inc: dict) -> str:
 # --------------------------------------------------------------------------- #
 # CLI                                                                         #
 # --------------------------------------------------------------------------- #
+# Hamza's monitor reports the folder name; Faiz's apps.toml / our schema use the app key.
+APP_KEYS = {"message-platform": "messaging", "shopping": "shopping", "messaging": "messaging"}
+
+
+class MonitorAdapter:
+    """Turns Hamza's FailureMonitor events + failure context into our FailedRun dicts."""
+
+    def __init__(self, client, monitor):
+        self.client = client
+        self.monitor = monitor
+
+    def poll_failed_runs(self) -> list[dict]:
+        runs = []
+        for ev in self.monitor.detect_failures():
+            try:
+                ctx = self.client.get_failure_context(ev.workflow_run_id, ev.run_attempt)
+            except Exception:
+                self.monitor.forget(ev.incident_id)  # re-report on the next poll
+                raise
+            runs.append({
+                "repo": f"{self.client.config.owner}/{self.client.config.repo}",
+                "app": APP_KEYS.get(ev.application, ev.application),
+                "run_id": ev.workflow_run_id,
+                "run_attempt": ev.run_attempt,
+                "commit_sha": ev.commit_sha,
+                "failed_logs": ctx.logs,
+                "html_url": ev.workflow_url,
+                "head_branch": ev.branch,
+            })
+        return runs
+
+
 def _build_real():
-    """Wire up teammates' modules. Adjust names here once their code lands."""
-    from agents.github_client import GitHubClient  # Hamza
-    from agents.monitor import Monitor  # Hamza
-    from agents.patcher import Repairer as FaizRepairer  # Faiz
+    """Wire up teammates' modules (Hamza: GitHub + monitor, Faiz: repair)."""
+    from agents.github_client import GitHubClient
+    from agents.monitor import FailureMonitor
+    from agents.patcher import Repairer as FaizRepairer
 
     gh = GitHubClient()
-    return Orchestrator(gh, FaizRepairer()), Monitor(gh)
+    missing = [fn for fn in ("find_pr", "open_draft_pr") if not hasattr(gh, fn)]
+    if missing:
+        raise SystemExit(f"GitHubClient is missing {missing} (PR publishing, Hamza's phase 2). "
+                         "Signatures are in the docstring at the top of agents/orchestrator.py.")
+    repo_path = os.getenv("OPSRELAY_REPO_PATH", str(Path(__file__).resolve().parents[1]))
+    return (Orchestrator(gh, FaizRepairer(repo_path=repo_path)),
+            MonitorAdapter(gh, FailureMonitor(gh)))
 
 
 def main() -> None:

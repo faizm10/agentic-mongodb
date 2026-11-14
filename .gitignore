@@ -1,6 +1,23 @@
-.venv/
+# Secrets - never commit
+.env
+.env.*
+!.env.example
+
+# Python
 __pycache__/
 *.pyc
-.env
+.venv/
+venv/
 .pytest_cache/
+
+# Node
+node_modules/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+.gstack/
+
+# OpsRelay dev demo
 agents/.fake_github.json

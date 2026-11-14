@@ -132,7 +132,7 @@ INCIDENT_SCHEMA = {
             "pr_intent": {
                 "bsonType": "object",
                 "required": ["branch", "title", "saved_at"],
-                "properties": {"branch": {"bsonType": "string", "pattern": "^opsrelay/"}},
+                "properties": {"branch": {"bsonType": "string", "pattern": "^agent/"}},
             },
             "pr": {
                 "bsonType": "object",
