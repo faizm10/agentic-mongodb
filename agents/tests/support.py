@@ -16,7 +16,7 @@ from pydantic import BaseModel
 
 from agents import RepairRequest
 from agents.investigator import _DiagnosisDraft, _EvidenceDraft
-from agents.patcher import _Edit, _PatchDraft
+from agents.patcher import _Candidate, _Edit, _PatchDraft
 
 CART_PATH = "shopping/src/shopping/cart.py"
 FAILING_TEST = "tests/test_cart.py::test_percentage_discount_applied_to_total"
@@ -174,16 +174,24 @@ def build_shopping_regression(root: Path) -> ShoppingRegression:
 
 @dataclass
 class StubLLM:
-    """Returns canned structured responses keyed by schema class name."""
+    """Returns canned structured responses keyed by schema class name.
 
-    responses: dict[str, BaseModel]
+    A list value is consumed in order across calls; its last item repeats.
+    """
+
+    responses: dict[str, BaseModel | list[BaseModel]]
     calls: list[tuple[str, str, str]] = field(default_factory=list)
 
     def generate(self, schema, system, user):
         self.calls.append((schema.__name__, system, user))
         response = self.responses[schema.__name__]
+        if isinstance(response, list):
+            response = response.pop(0) if len(response) > 1 else response[0]
         assert isinstance(response, schema)
         return response
+
+    def count(self, schema_name: str) -> int:
+        return sum(name == schema_name for name, _, _ in self.calls)
 
 
 def diagnosis_draft(**overrides) -> _DiagnosisDraft:
@@ -222,13 +230,23 @@ def diagnosis_draft(**overrides) -> _DiagnosisDraft:
     return _DiagnosisDraft(**fields)
 
 
-def patch_draft(replace: str = FIXED_LINES, path: str = CART_PATH, find: str = BUGGY_LINE) -> _PatchDraft:
-    return _PatchDraft(
-        outcome="patch",
-        summary="Apply discount_percent as a percentage of the subtotal.",
-        edits=[_Edit(path=path, find=find, replace=replace)],
-        review_reason=None,
-    )
+WRONG_FIX = "        return round(self.subtotal() * (1 - self.discount_percent), 2)\n"
+LONGER_FIX = (
+    "        rate = self.discount_percent / 100\n"
+    "        discount = self.subtotal() * rate\n"
+    "        return round(self.subtotal() - discount, 2)\n"
+)
+
+
+def candidate(
+    replace: str = FIXED_LINES, path: str = CART_PATH, find: str = BUGGY_LINE,
+    summary: str = "Apply discount_percent as a percentage of the subtotal.",
+) -> _Candidate:
+    return _Candidate(summary=summary, edits=[_Edit(path=path, find=find, replace=replace)])
+
+
+def patch_draft(*candidates: _Candidate) -> _PatchDraft:
+    return _PatchDraft(outcome="patch", candidates=list(candidates) or [candidate()], review_reason=None)
 
 
 def stub_llm(diagnosis=None, patch=None) -> StubLLM:
@@ -236,3 +254,34 @@ def stub_llm(diagnosis=None, patch=None) -> StubLLM:
         "_DiagnosisDraft": diagnosis or diagnosis_draft(),
         "_PatchDraft": patch or patch_draft(),
     })
+
+
+FLAKY_TEST = """\
+from pathlib import Path
+
+MARKER = Path(__file__).with_name(".ran-once")
+
+
+def test_stock_sync():
+    # Fails on the first run in a fresh checkout, passes afterwards: a classic flake.
+    first_run = not MARKER.exists()
+    MARKER.write_text("x")
+    assert not first_run, "stock sync timed out"
+"""
+
+FLAKY_LOG = """\
+2026-11-14T11:40:03Z F..                                                      [100%]
+FAILED tests/test_inventory.py::test_stock_sync - AssertionError: stock sync timed out
+2026-11-14T11:40:03Z 1 failed, 3 passed in 0.03s
+"""
+
+
+def build_flaky_repo(root: Path) -> ShoppingRegression:
+    """Shopping repo whose code is fine but one test fails only on its first run."""
+    reg = build_shopping_regression(root)
+    (reg.repo / CART_PATH).write_text(CART_GOOD)
+    (reg.repo / "shopping/tests/test_inventory.py").write_text(FLAKY_TEST)
+    _git(reg.repo, "add", "-A")
+    _git(reg.repo, "commit", "-q", "-m", "inventory: stock sync test")
+    reg.bad_sha = _git(reg.repo, "rev-parse", "HEAD")
+    return reg

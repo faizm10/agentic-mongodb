@@ -38,6 +38,11 @@ class OpenAIStructuredLLM:
         return runnable.invoke([SystemMessage(content=system), HumanMessage(content=user)])
 
 
+def numbered(content: str) -> str:
+    """Prefix each line with its 1-based number ("  12| ") so tracebacks can be matched up."""
+    return "".join(f"{i:4d}| {line}" for i, line in enumerate(content.splitlines(keepends=True), 1))
+
+
 def untrusted_block(label: str, content: str, limit: int = 12_000) -> str:
     """Wrap untrusted input (CI logs, diffs, incidents) so the model reads it as data."""
     if len(content) > limit:

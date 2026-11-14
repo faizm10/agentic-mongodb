@@ -1,12 +1,24 @@
-"""Single entry point for the orchestrator: diagnose, patch, verify."""
+"""Single entry point for the orchestrator: reproduce, diagnose, patch, verify.
+
+Order matters for precision and cost:
+1. Reproduce the failing tests locally (``baseline_runs`` times) before any model
+   call. Flaky or non-reproducible failures stop here as needs_review.
+2. Diagnose with the CI log *and* the fresh local traceback.
+3. Ask for up to ``max_candidates`` alternative patches, verify each in its own
+   copy, and keep the smallest passing one.
+4. If none pass, feed the failed candidates and their test output back for
+   another round, up to ``max_rounds``.
+"""
 
 from __future__ import annotations
 
-from .contracts import RepairRequest, RepairResult, load_app_config
-from .investigator import investigate
+from datetime import UTC, datetime
+
+from .contracts import CandidateAttempt, RepairRequest, RepairResult, load_app_config
+from .investigator import investigate, parse_failing_tests
 from .llm import OpenAIStructuredLLM, StructuredLLM
-from .patcher import propose_patch
-from .verifier import verify_patch
+from .patcher import propose_patches
+from .verifier import VerificationError, VerificationSession
 
 
 def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) -> RepairResult:
@@ -17,22 +29,80 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
     raised so the orchestrator can apply its own retry policy.
     """
     app = load_app_config(request.app)
-    llm = llm or OpenAIStructuredLLM()
+    started = datetime.now(UTC)
 
-    diagnosis = investigate(request, llm, app)
-    if diagnosis.outcome == "needs_review":
+    def done(outcome: str, reason: str, **fields) -> RepairResult:
         return RepairResult(
-            outcome="needs_review", reason=f"diagnosis: {diagnosis.review_reason}",
-            app=app.name, commit_sha=request.commit_sha, diagnosis=diagnosis,
+            outcome=outcome, reason=reason, app=app.name, commit_sha=request.commit_sha,
+            started_at=started, finished_at=datetime.now(UTC), **fields,
         )
 
-    patch = propose_patch(request, diagnosis, llm, app)
-    if not patch.accepted or patch.diff is None:
-        return RepairResult(
-            outcome="needs_review", reason=f"patch rejected: {patch.rejection_reason}",
-            app=app.name, commit_sha=request.commit_sha, diagnosis=diagnosis, patch=patch.diff,
-        )
+    failing = parse_failing_tests(request.failed_test_logs, app)
+    if not failing:
+        return done("needs_review", "no failing pytest node ids found in the CI log")
 
-    result = verify_patch(app, request.repo_path, request.commit_sha, patch.diff, diagnosis.failing_tests)
-    result.diagnosis = diagnosis
-    return result
+    try:
+        with VerificationSession(app, request.repo_path, request.commit_sha, failing) as session:
+            baseline = session.reproduce()
+            if baseline.flaky:
+                return done(
+                    "needs_review", "flaky: the failing tests passed on at least one baseline rerun",
+                    flaky=True, baseline=baseline.runs,
+                )
+            if not baseline.reproduced:
+                return done("needs_review", "baseline did not reproduce the CI failure", baseline=baseline.runs)
+
+            llm = llm or OpenAIStructuredLLM()
+            diagnosis = investigate(request, llm, app, reproduction=baseline.runs[0].output_tail)
+            if diagnosis.outcome == "needs_review":
+                return done(
+                    "needs_review", f"diagnosis: {diagnosis.review_reason}",
+                    diagnosis=diagnosis, baseline=baseline.runs,
+                )
+
+            attempts: list[CandidateAttempt] = []
+            for round_no in range(1, app.max_rounds + 1):
+                previous = [a for a in attempts if a.patch]
+                round_attempts = []
+                for index, patch in enumerate(propose_patches(request, diagnosis, llm, app, previous), 1):
+                    if not patch.accepted or patch.diff is None:
+                        round_attempts.append(CandidateAttempt(
+                            round=round_no, index=index, summary=patch.summary, patch=patch.diff,
+                            changed_files=patch.changed_files, changed_lines=patch.changed_lines,
+                            passed=False, reason=f"patch rejected: {patch.rejection_reason}",
+                        ))
+                        continue
+                    check = session.check(patch.diff)
+                    round_attempts.append(CandidateAttempt(
+                        round=round_no, index=index, summary=patch.summary, patch=patch.diff,
+                        changed_files=check.changed_files, changed_lines=check.changed_lines,
+                        passed=check.passed, reason=check.reason,
+                        reproduce_runs=check.reproduce_runs, suite=check.suite,
+                    ))
+                attempts += round_attempts
+
+                passing = [a for a in round_attempts if a.passed]
+                if passing:
+                    best = min(passing, key=lambda a: (a.changed_lines, len(a.changed_files), a.index))
+                    return done(
+                        "verified",
+                        f"{best.reason}; chose candidate {best.round}.{best.index} "
+                        f"({best.changed_lines} changed lines) of {len(attempts)} tried",
+                        diagnosis=diagnosis, patch=best.patch, changed_files=best.changed_files,
+                        baseline=baseline.runs, reproduce_after_patch=best.reproduce_runs,
+                        patched_suite=best.suite, attempts=attempts,
+                    )
+                if not any(a.patch for a in round_attempts):
+                    break  # nothing testable to learn from; another round would repeat itself
+
+    except VerificationError as exc:
+        return done("needs_review", str(exc))
+
+    tested = [a for a in attempts if a.reproduce_runs]
+    last = (tested or attempts)[-1].reason if attempts else "no candidates"
+    return done(
+        "needs_review",
+        f"no candidate passed after {len({a.round for a in attempts}) or 1} round(s); "
+        f"last tested: {last}",
+        diagnosis=diagnosis, baseline=baseline.runs, attempts=attempts,
+    )

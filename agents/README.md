@@ -4,11 +4,26 @@ Takes a failed CI run for a demo app and returns either a **verified** minimal p
 or a **needs_review** result with a reason.
 
 ```
-investigator.py  logs + diff + source + prior incidents -> grounded Diagnosis
-patcher.py       Diagnosis -> minimal unified diff, scope-checked
-verifier.py      failed commit in a temp copy: reproduce -> apply -> rerun suite
+verifier.py      failed commit in a temp copy: reproduce (x2) -> apply each candidate -> rerun
+investigator.py  logs + local reproduction + traceback frames + diff + source -> grounded Diagnosis
+patcher.py       Diagnosis (+ failed attempts) -> up to 3 minimal diffs, scope-checked
 pipeline.py      repair_ci_failure(): the one call the orchestrator makes
 ```
+
+## How it gets to a precise fix
+
+1. **Reproduce first.** The failing tests run `baseline_runs` (2) times at the failed commit
+   before any model call. If they pass on any rerun the result is `needs_review` with
+   `flaky=True`; if they never fail it is "baseline did not reproduce". Neither costs a model call.
+2. **Traceback-guided diagnosis.** Frames from the CI log *and* the local rerun are parsed
+   (pytest and Python formats, GitHub runner absolute paths included) and mapped to repo
+   paths. The model sees the frame list and line-numbered source, suspect files are ranked
+   deepest frame first, and the local rerun output counts as grounded evidence.
+3. **Multiple candidates.** The model returns up to `max_candidates` (3) alternative fixes.
+   Each is applied to its own fresh copy and must pass the failing tests on every rerun plus
+   the full app suite. The smallest passing patch (fewest changed lines) wins.
+4. **Retry with feedback.** If none pass, round 2 sends the failed patches and their real
+   test output back to the model (`max_rounds` = 2). Repeated diffs are rejected without rerunning.
 
 No GitHub or MongoDB writes happen here. The orchestrator stores
 `result.model_dump()`, and the PR module opens a PR from a verified `result.patch`.
@@ -35,6 +50,12 @@ passing-after pytest output and the patch:
 agents/.venv/bin/python -m pytest agents/tests/test_shopping_repair.py::test_shopping_discount_failure_reproduced_then_fixed -s -q
 ```
 
+Write sample results (verified after 2 rounds, flaky, never fixed) for the admin dashboard:
+
+```bash
+agents/.venv/bin/python -m agents.demo --out admin-dashboard/.data/repairs
+```
+
 These tests use a stub model. `test_live_openai.py` runs the same regression
 against the real model and is skipped unless `OPENAI_API_KEY` is set.
 
@@ -55,12 +76,16 @@ result = repair_ci_failure(RepairRequest(
 
 result.outcome          # "verified" | "needs_review"
 result.reason           # why, in one line
-result.diagnosis        # likely_cause, explanation, evidence[], suspect_files, failing_tests
-result.patch            # unified diff against commit_sha (git apply -p1)
+result.flaky            # failing tests passed on a baseline rerun
+result.diagnosis        # likely_cause, explanation, evidence[], suspect_files (ranked),
+                        # failing_tests, traceback_frames[], confidence
+result.patch            # chosen unified diff against commit_sha (git apply -p1)
 result.changed_files
-result.baseline         # failing tests on the original code (TestRun)
-result.reproduce_after_patch
-result.patched_suite    # full app suite after the patch
+result.baseline         # [TestRun] failing tests on the original code, one per rerun
+result.reproduce_after_patch  # [TestRun] same tests with the chosen patch
+result.patched_suite    # TestRun: full app suite after the patch
+result.attempts         # [CandidateAttempt] every candidate, round, outcome and output
+result.started_at, result.finished_at
 ```
 
 `repair_ci_failure(request, llm=...)` accepts any object with
@@ -91,5 +116,6 @@ Model and API errors are raised so the orchestrator can apply its own retry poli
 ## App configuration
 
 `apps.toml` sets each app's root, editable `source_dirs`, `test_dir`, fixed
-`pytest_args` and timeout. The Shopping and Messaging entries are placeholders until
+`pytest_args` and timeout. `baseline_runs`, `max_candidates` and `max_rounds` default to
+2, 3 and 2 and can be set per app. The Shopping and Messaging entries are placeholders until
 the demo apps land in `shopping/` and `message-platform/`.

@@ -114,4 +114,4 @@ def test_verifier_revalidates_scope_before_touching_the_repo(shopping):
 
     assert result.outcome == "needs_review"
     assert "CI configuration" in result.reason
-    assert result.baseline is None
+    assert result.baseline == []

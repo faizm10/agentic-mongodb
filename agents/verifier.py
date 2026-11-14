@@ -1,8 +1,9 @@
-"""Reproduce a CI failure at the failed commit, apply a patch, and rerun the app's tests.
+"""Reproduce a CI failure at the failed commit, apply candidate patches, rerun the app's tests.
 
 Isolation model:
 - The failed commit is exported with ``git archive`` into a fresh temp directory.
   The developer's checkout is only read: no worktree, checkout, stash or index change.
+- Each candidate patch is applied to its own copy of that pristine export.
 - Tests run with a scrubbed environment (PATH, a temp HOME/TMPDIR and locale only),
   so API keys, MONGODB_URI, GITHUB_TOKEN etc. are never visible to the code under test.
 - Commands are fixed by apps.toml; only validated pytest node ids are appended.
@@ -17,12 +18,14 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
 import signal
 import subprocess
 import sys
 import tarfile
 import tempfile
 import time
+from dataclasses import dataclass, field
 from pathlib import Path
 
 from .contracts import AppConfig, RepairResult, TestRun, load_app_config
@@ -47,6 +50,130 @@ _GIT_ISOLATION = [
 ]
 
 
+class VerificationError(Exception):
+    """The failure cannot be verified at all; the message is the review reason."""
+
+
+@dataclass
+class Baseline:
+    runs: list[TestRun]
+
+    @property
+    def reproduced(self) -> bool:
+        return all(_reproduced(run) for run in self.runs)
+
+    @property
+    def flaky(self) -> bool:
+        return any(_reproduced(run) for run in self.runs) and any(run.passed for run in self.runs)
+
+
+@dataclass
+class CandidateCheck:
+    passed: bool
+    reason: str
+    changed_files: list[str] = field(default_factory=list)
+    changed_lines: int = 0
+    reproduce_runs: list[TestRun] = field(default_factory=list)
+    suite: TestRun | None = None
+
+
+class VerificationSession:
+    """Export the failed commit once, then reproduce and check candidates against it.
+
+    Use as a context manager; raises VerificationError on entry if the commit,
+    app root or test ids cannot be used.
+    """
+
+    def __init__(self, app: AppConfig, repo_path: str, commit_sha: str, failing_tests: list[str]):
+        self.app = app
+        self.repo_path = repo_path
+        self.commit_sha = commit_sha
+        self.failing_tests = failing_tests
+        self._tmp: tempfile.TemporaryDirectory | None = None
+        self._candidates = 0
+
+    def __enter__(self) -> VerificationSession:
+        if not _SHA_RE.match(self.commit_sha):
+            raise VerificationError(f"invalid commit sha {self.commit_sha!r}")
+        tests, bad = _validate_node_ids(self.failing_tests, self.app)
+        if bad:
+            raise VerificationError(f"refusing unsafe or out-of-scope test ids: {bad}")
+        if not tests:
+            raise VerificationError("no failing test ids to reproduce")
+        self.tests = tests
+
+        self._tmp = tempfile.TemporaryDirectory(prefix="opsrelay-verify-")
+        self.root = Path(self._tmp.name)
+        self.pristine = self.root / "pristine"
+        try:
+            _export_commit(self.repo_path, self.commit_sha, self.pristine)
+        except (subprocess.CalledProcessError, tarfile.TarError) as exc:
+            self.__exit__(None, None, None)
+            raise VerificationError(f"could not export commit {self.commit_sha}: {_describe(exc)}") from exc
+        if not (self.pristine / self.app.root).is_dir():
+            self.__exit__(None, None, None)
+            raise VerificationError(f"app root {self.app.root!r} does not exist at {self.commit_sha}")
+        self.env = _sandbox_env(self.root)
+        return self
+
+    def __exit__(self, *exc) -> None:
+        if self._tmp is not None:
+            self._tmp.cleanup()
+            self._tmp = None
+
+    def reproduce(self) -> Baseline:
+        """Run the failing tests ``baseline_runs`` times on a copy of the original code."""
+        workspace = self._fresh_copy("baseline")
+        app_dir = workspace / self.app.root
+        return Baseline([self._pytest(app_dir, self.tests) for _ in range(max(1, self.app.baseline_runs))])
+
+    def check(self, diff: str) -> CandidateCheck:
+        """Apply ``diff`` to a fresh copy and rerun the failing tests and the full suite."""
+        patch = validate_patch(diff, self.app)
+        if not patch.accepted:
+            return CandidateCheck(False, f"patch rejected: {patch.rejection_reason}")
+
+        self._candidates += 1
+        workspace = self._fresh_copy(f"candidate-{self._candidates}")
+        fields = dict(changed_files=patch.changed_files, changed_lines=patch.changed_lines)
+        applied = _git(workspace, "apply", "--whitespace=nowarn", "-", input=diff, check=False)
+        if applied.returncode != 0:
+            return CandidateCheck(
+                False, f"patch does not apply at {self.commit_sha}: {applied.stderr.strip()[:500]}", **fields
+            )
+        actual = _git(workspace, "diff", "--name-only").stdout.split()
+        if sorted(actual) != sorted(patch.changed_files):
+            return CandidateCheck(False, f"applied patch changed {actual}, expected {patch.changed_files}", **fields)
+
+        app_dir = workspace / self.app.root
+        runs: list[TestRun] = []
+        for _ in range(max(1, self.app.baseline_runs)):
+            runs.append(self._pytest(app_dir, self.tests))
+            if not runs[-1].passed:
+                break
+        if not runs[-1].passed:
+            reason = "patched run timed out" if runs[-1].timed_out else "the originally failing tests still fail after the patch"
+            return CandidateCheck(False, reason, reproduce_runs=runs, **fields)
+
+        suite = self._pytest(app_dir, [self.app.test_dir])
+        if not suite.passed:
+            reason = "app test suite timed out" if suite.timed_out else "app test suite fails after the patch"
+            return CandidateCheck(False, reason, reproduce_runs=runs, suite=suite, **fields)
+        return CandidateCheck(
+            True,
+            f"{len(self.tests)} failing test(s) now pass on {len(runs)} rerun(s), plus the full {self.app.name} suite",
+            reproduce_runs=runs, suite=suite, **fields,
+        )
+
+    def _fresh_copy(self, name: str) -> Path:
+        dest = self.root / name
+        shutil.copytree(self.pristine, dest, symlinks=True)
+        return dest
+
+    def _pytest(self, cwd: Path, targets: list[str]) -> TestRun:
+        return _run_pytest(self.app, cwd, targets, self.env)
+
+
 def verify_patch(
     app: AppConfig | str,
     repo_path: str,
@@ -54,73 +181,32 @@ def verify_patch(
     diff: str,
     failing_tests: list[str],
 ) -> RepairResult:
+    """Verify a single externally supplied patch (no model involved)."""
     app = load_app_config(app) if isinstance(app, str) else app
 
-    def needs_review(reason: str, **fields) -> RepairResult:
-        return RepairResult(
-            outcome="needs_review", reason=reason, app=app.name, commit_sha=commit_sha,
-            patch=diff or None, **fields,
-        )
+    def result(outcome: str, reason: str, **fields) -> RepairResult:
+        return RepairResult(outcome=outcome, reason=reason, app=app.name, commit_sha=commit_sha, **fields)
 
     patch = validate_patch(diff, app)
     if not patch.accepted:
-        return needs_review(f"patch rejected: {patch.rejection_reason}")
-    if not _SHA_RE.match(commit_sha):
-        return needs_review(f"invalid commit sha {commit_sha!r}")
-    tests, bad = _validate_node_ids(failing_tests, app)
-    if bad:
-        return needs_review(f"refusing unsafe or out-of-scope test ids: {bad}")
-    if not tests:
-        return needs_review("no failing test ids to reproduce")
+        return result("needs_review", f"patch rejected: {patch.rejection_reason}", patch=diff or None)
+    try:
+        with VerificationSession(app, repo_path, commit_sha, failing_tests) as session:
+            baseline = session.reproduce()
+            if not baseline.reproduced:
+                reason = (
+                    "flaky: the failing tests passed on at least one baseline rerun"
+                    if baseline.flaky else "baseline did not reproduce the CI failure"
+                )
+                return result("needs_review", reason, flaky=baseline.flaky, baseline=baseline.runs, patch=diff)
+            check = session.check(diff)
+    except VerificationError as exc:
+        return result("needs_review", str(exc), patch=diff)
 
-    with tempfile.TemporaryDirectory(prefix="opsrelay-verify-") as tmp:
-        tmp_path = Path(tmp)
-        workspace = tmp_path / "repo"
-        try:
-            _export_commit(repo_path, commit_sha, workspace)
-        except (subprocess.CalledProcessError, tarfile.TarError) as exc:
-            return needs_review(f"could not export commit {commit_sha}: {_describe(exc)}")
-        app_dir = workspace / app.root
-        if not app_dir.is_dir():
-            return needs_review(f"app root {app.root!r} does not exist at {commit_sha}")
-        env = _sandbox_env(tmp_path)
-
-        baseline = _run_pytest(app, app_dir, tests, env)
-        if not _reproduced(baseline):
-            return needs_review(
-                "baseline did not reproduce the CI failure", baseline=baseline,
-                changed_files=patch.changed_files,
-            )
-
-        applied = _git(workspace, "apply", "--whitespace=nowarn", "-", input=diff, check=False)
-        if applied.returncode != 0:
-            return needs_review(
-                f"patch does not apply at {commit_sha}: {applied.stderr.strip()[:500]}",
-                baseline=baseline, changed_files=patch.changed_files,
-            )
-        actual = _git(workspace, "diff", "--name-only").stdout.split()
-        if sorted(actual) != sorted(patch.changed_files):
-            return needs_review(
-                f"applied patch changed {actual}, expected {patch.changed_files}",
-                baseline=baseline, changed_files=actual,
-            )
-
-        after = _run_pytest(app, app_dir, tests, env)
-        suite = _run_pytest(app, app_dir, [app.test_dir], env)
-
-    fields = dict(
-        baseline=baseline, reproduce_after_patch=after, patched_suite=suite,
-        changed_files=patch.changed_files,
-    )
-    if not after.passed:
-        return needs_review("the originally failing tests still fail after the patch", **fields)
-    if not suite.passed:
-        reason = "app test suite timed out" if suite.timed_out else "app test suite fails after the patch"
-        return needs_review(reason, **fields)
-    return RepairResult(
-        outcome="verified",
-        reason=f"{len(tests)} failing test(s) reproduced, then passed with the full {app.name} suite",
-        app=app.name, commit_sha=commit_sha, patch=diff, **fields,
+    return result(
+        "verified" if check.passed else "needs_review", check.reason,
+        patch=diff, changed_files=check.changed_files, baseline=baseline.runs,
+        reproduce_after_patch=check.reproduce_runs, patched_suite=check.suite,
     )
 
 

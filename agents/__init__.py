@@ -2,6 +2,7 @@
 
 from .contracts import (
     AppConfig,
+    CandidateAttempt,
     Diagnosis,
     Evidence,
     PatchResult,
@@ -9,16 +10,18 @@ from .contracts import (
     RepairRequest,
     RepairResult,
     TestRun,
+    TracebackFrame,
     load_app_config,
 )
 from .investigator import investigate
 from .llm import OpenAIStructuredLLM, StructuredLLM
-from .patcher import propose_patch, validate_patch
+from .patcher import propose_patches, validate_patch
 from .pipeline import repair_ci_failure
-from .verifier import verify_patch
+from .verifier import VerificationSession, verify_patch
 
 __all__ = [
     "AppConfig",
+    "CandidateAttempt",
     "Diagnosis",
     "Evidence",
     "OpenAIStructuredLLM",
@@ -28,9 +31,11 @@ __all__ = [
     "RepairResult",
     "StructuredLLM",
     "TestRun",
+    "TracebackFrame",
+    "VerificationSession",
     "investigate",
     "load_app_config",
-    "propose_patch",
+    "propose_patches",
     "repair_ci_failure",
     "validate_patch",
     "verify_patch",

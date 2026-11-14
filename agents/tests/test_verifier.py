@@ -1,8 +1,16 @@
-from agents import load_app_config, verify_patch
+from agents import VerificationSession, load_app_config, verify_patch
 from agents.patcher import build_diff
 from agents.verifier import _sandbox_env
 
-from .support import BUGGY_LINE, CART_BUGGY, CART_PATH, FAILING_TEST, FIXED_LINES, _Edit
+from .support import (
+    BUGGY_LINE,
+    CART_BUGGY,
+    CART_PATH,
+    FAILING_TEST,
+    FIXED_LINES,
+    WRONG_FIX,
+    _Edit,
+)
 
 
 def fix_diff() -> str:
@@ -14,7 +22,8 @@ def test_needs_review_when_baseline_does_not_reproduce(shopping):
 
     assert result.outcome == "needs_review"
     assert result.reason == "baseline did not reproduce the CI failure"
-    assert result.baseline.passed
+    assert all(run.passed for run in result.baseline)
+    assert not result.flaky
     assert result.patched_suite is None
 
 
@@ -35,9 +44,10 @@ def test_patched_run_is_killed_on_timeout(shopping):
     result = verify_patch(app, str(shopping.repo), shopping.bad_sha, diff, [FAILING_TEST])
 
     assert result.outcome == "needs_review"
-    assert result.reproduce_after_patch.timed_out
-    assert result.reproduce_after_patch.returncode is None
-    assert result.reproduce_after_patch.duration_seconds < 10
+    assert result.reason == "patched run timed out"
+    assert result.reproduce_after_patch[-1].timed_out
+    assert result.reproduce_after_patch[-1].returncode is None
+    assert result.reproduce_after_patch[-1].duration_seconds < 10
 
 
 def test_unsafe_test_ids_are_refused(shopping):
@@ -48,7 +58,7 @@ def test_unsafe_test_ids_are_refused(shopping):
 
     assert result.outcome == "needs_review"
     assert "refusing unsafe or out-of-scope test ids" in result.reason
-    assert result.baseline is None
+    assert result.baseline == []
 
 
 def test_unknown_commit_needs_review(shopping):
@@ -56,6 +66,22 @@ def test_unknown_commit_needs_review(shopping):
 
     assert result.outcome == "needs_review"
     assert result.reason.startswith("could not export commit deadbeef")
+
+
+def test_session_checks_each_candidate_on_a_fresh_copy(shopping):
+    app = load_app_config("shopping")
+    wrong = build_diff({CART_PATH: CART_BUGGY}, [_Edit(path=CART_PATH, find=BUGGY_LINE, replace=WRONG_FIX)])
+
+    with VerificationSession(app, str(shopping.repo), shopping.bad_sha, [FAILING_TEST]) as session:
+        baseline = session.reproduce()
+        first = session.check(wrong)
+        second = session.check(fix_diff())  # would not apply if it shared the first copy
+        root = session.root
+
+    assert baseline.reproduced and not baseline.flaky
+    assert not first.passed and first.changed_lines == 2
+    assert second.passed, second.reason
+    assert not root.exists(), "temp workspace must be removed"
 
 
 def test_sandbox_env_drops_credentials(tmp_path, monkeypatch):
