@@ -399,8 +399,13 @@ class Orchestrator:
             decided.append((inc["_id"], status))
         return decided
 
-    def run_forever(self, monitor, poll_seconds: int = POLL_SECONDS, live_intake=None) -> None:
+    def run_forever(self, monitor, poll_seconds: int = POLL_SECONDS, live=None,
+                    live_intake=None) -> None:
+        """CI failures (monitor), live incidents from the uptime monitor (live_intake) and,
+        if given, Mo's live checks (LiveWatcher), every poll_seconds."""
         print(f"OpsRelay worker {self.worker_id} starting; resuming incomplete incidents…")
+        if live is not None:
+            print(f"live checks every {poll_seconds}s: {', '.join(live.services)}")
         self.run_pending()
         while True:
             try:
@@ -414,6 +419,11 @@ class Orchestrator:
                 self.check_reviews()
             except Exception as e:  # noqa: BLE001 - keep the worker alive
                 print(f"[worker] loop error: {e}")
+            if live is not None:
+                try:
+                    live.tick()
+                except Exception as e:  # noqa: BLE001 - a live-check bug must not stop CI handling
+                    print(f"[worker] live check error: {e}")
             time.sleep(poll_seconds)
 
 
@@ -545,7 +555,8 @@ def _build_real():
     from agents.patcher import Repairer as FaizRepairer
 
     gh = GitHubClient()
-    repo_path = os.getenv("OPSRELAY_REPO_PATH", str(Path(__file__).resolve().parents[1]))
+    # `or`, not a getenv default: .env.example ships OPSRELAY_REPO_PATH= (blank)
+    repo_path = os.getenv("OPSRELAY_REPO_PATH") or str(Path(__file__).resolve().parents[1])
     return (Orchestrator(GitHubAdapter(gh, PullRequestPublisher(gh)),
                          SyncingRepairer(FaizRepairer(repo_path=repo_path), repo_path)),
             MonitorAdapter(gh, FailureMonitor(gh)))
@@ -558,11 +569,36 @@ def _live_intake(orch: Orchestrator):
     return LiveIntake(f"{cfg.owner}/{cfg.repo}", db=orch.db, base_branch=cfg.base_branch)
 
 
+def _github_or_none():
+    try:
+        from agents.github_client import GitHubClient
+        return GitHubClient()
+    except Exception as e:  # noqa: BLE001 - CI status is optional evidence
+        print(f"[live] GitHub unavailable, CI status will be 'unknown': {e}")
+        return None
+
+
+def _build_live(github, required: bool = False):
+    from agents.live_incidents import LiveWatcher, live_services
+
+    services = live_services()
+    if not services:
+        if required:
+            raise SystemExit("Set OPSRELAY_LIVE_SERVICES (e.g. messaging) to choose services to watch.")
+        return None
+    # `or`, not a getenv default: .env.example ships OPSRELAY_REPO_PATH= (blank)
+    repo_path = os.getenv("OPSRELAY_REPO_PATH") or str(Path(__file__).resolve().parents[1])
+    return LiveWatcher(services, repo_path, github=github)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(prog="python -m agents.orchestrator")
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("setup", help="create collections, indexes, vector index")
-    sub.add_parser("worker", help="resume incomplete incidents, then poll CI + live incidents forever")
+    sub.add_parser("worker", help="resume incomplete incidents, then poll CI + live incidents forever "
+                                  "(+ live checks if OPSRELAY_LIVE_SERVICES is set)")
+    lv = sub.add_parser("live", help="live checks only: open/update incidents, collect evidence")
+    lv.add_argument("--once", action="store_true", help="one round of checks, then exit")
     sub.add_parser("resume", help="resume incomplete incidents once and exit")
     sub.add_parser("intake", help="record new live incidents from the uptime monitor once and exit")
     sub.add_parser("reviews", help="record merged / closed agent PRs once and exit")
@@ -579,8 +615,9 @@ def main() -> None:
         print("setup complete")
     elif a.cmd == "worker":
         orch, monitor = _build_real()
-        live = os.getenv("OPSRELAY_LIVE_INTAKE", "1").lower() not in ("0", "false", "no")
-        orch.run_forever(monitor, live_intake=_live_intake(orch) if live else None)
+        intake_on = os.getenv("OPSRELAY_LIVE_INTAKE", "1").lower() not in ("0", "false", "no")
+        orch.run_forever(monitor, live=_build_live(orch.github.client),
+                          live_intake=_live_intake(orch) if intake_on else None)
     elif a.cmd == "intake":
         orch, _ = _build_real()
         for iid in _live_intake(orch).poll():
@@ -588,6 +625,13 @@ def main() -> None:
     elif a.cmd == "reviews":
         orch, _ = _build_real()
         print(f"recorded {len(orch.check_reviews())} review decision(s)")
+    elif a.cmd == "live":
+        watcher = _build_live(_github_or_none(), required=True)
+        while True:
+            watcher.tick()
+            if a.once:
+                break
+            time.sleep(POLL_SECONDS)
     elif a.cmd == "resume":
         orch, _ = _build_real()
         print(f"processed {orch.run_pending()} incident(s)")
