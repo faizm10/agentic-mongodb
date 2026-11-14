@@ -195,7 +195,7 @@ def send_message(
     message_id: str | None = None,
 ) -> tuple[dict[str, Any], bool]:
     """Store a message. Returns (message, created). ``created`` is False for an idempotent replay."""
-    ensure_participant(conn, sender_id, conversation_id)
+    ensure_participant(conn, conversation_id, sender_id)
     body = validate_body(body)
     if idempotency_key is not None and len(idempotency_key) > MAX_IDEMPOTENCY_KEY_LENGTH:
         raise InvalidMessageError(
