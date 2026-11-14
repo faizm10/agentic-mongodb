@@ -1,0 +1,237 @@
+# OpsRelay AI diagnosis and repair
+
+Takes a failed CI run **or a failed live service check** for a demo app. It returns a
+**verified** minimal patch, or **needs_review** with a reason and the next diagnostic to run.
+For live failures it also confirms recovery with a fresh delivery probe.
+
+```
+live_check.py     one-shot health + send-and-deliver probe (Hamza's loop, Mo after a fix, CLI)
+live_incident.py  route a failed live check; confirm_recovery(); diagnose_incident() for both kinds
+verifier.py       failed commit in a temp copy: reproduce (x2) -> apply each candidate -> rerun
+investigator.py   CI log / live probe + service logs + reproduction + diff + source -> grounded Diagnosis
+patcher.py        Diagnosis (+ failed attempts) -> up to 3 minimal diffs, scope-checked; Repairer for Mo
+pipeline.py       repair_ci_failure()
+```
+
+## How it gets to a precise fix
+
+1. **Reproduce first.** The failing tests run `baseline_runs` (2) times at the failed commit
+   before any model call. If they pass on any rerun the result is `needs_review` with
+   `flaky=True`; if they never fail it is "baseline did not reproduce". Neither costs a model call.
+2. **Traceback-guided diagnosis.** Frames from the CI log *and* the local rerun are parsed
+   (pytest and Python formats, GitHub runner absolute paths included) and mapped to repo
+   paths. The model sees the frame list and line-numbered source, suspect files are ranked
+   deepest frame first, and the local rerun output counts as grounded evidence.
+3. **Multiple candidates.** The model returns up to `max_candidates` (3) alternative fixes.
+   Each is applied to its own fresh copy and must pass the failing tests on every rerun plus
+   the full app suite. The smallest passing patch (fewest changed lines) wins.
+4. **Retry with feedback.** If none pass, round 2 sends the failed patches and their real
+   test output back to the model (`max_rounds` = 2). Repeated diffs are rejected without rerunning.
+
+No GitHub or MongoDB writes happen here. The orchestrator stores
+`result.model_dump()`, and the PR module opens a PR from a verified `result.patch`.
+
+## Live checks
+
+```bash
+agents/.venv/bin/python -m agents live-check messaging                       # URL from services.toml
+agents/.venv/bin/python -m agents live-check messaging --url https://msg.example --timeout 3
+OPSRELAY_MESSAGING_URL=https://msg.example agents/.venv/bin/python -m agents live-check messaging
+```
+
+The JSON result is printed to stdout and a one-line verdict to stderr. The exit code is
+0 when the probe is delivered, 1 when the check fails, and 2 on bad usage. `--fixture`
+labels the result `"target": "fixture"` so fixture runs are never mistaken for the live app.
+
+Each check sends a probe with a fresh id (`opsrelay-<uuid4>`) and reports one failure kind:
+
+| `failure_kind` | Meaning | `reachable` |
+|---|---|---|
+| `connection_timeout` | no response within `timeout_seconds`; the cause is unknown | false |
+| `connection_refused` | nothing accepting connections at the URL | false |
+| `connection_error` | DNS, TLS or another network failure before any HTTP response | false |
+| `http_error` | 4xx/5xx from health, send or read-back (`http_status` is set) | true |
+| `invalid_response` | 2xx, but the body breaks the contract below | true |
+| `not_delivered` | send accepted, but this probe id never appeared in read-back within `delivery_wait_seconds` | true |
+
+### Live check probe contract (Taha's Messaging endpoints)
+
+Taha's endpoints don't exist yet, so everything here was verified against the local
+fixture in `tests/messaging_support.py`. That fixture implements exactly this contract.
+All paths are configurable in `services.toml`.
+
+```
+GET  /health                                   -> 2xx (JSON or plain text)
+POST /probe/messages                           {"probe_id", "inbox": "opsrelay-probe", "body"}
+                                               -> 2xx {"probe_id", "message_id", "status"}
+GET  /probe/inbox/{inbox}?probe_id=<id>        -> 200 {"messages": [{"probe_id", "message_id", ...}]}
+```
+
+The probe is delivered only when the read-back list contains this exact `probe_id`.
+`opsrelay-probe` is a dedicated test inbox. If the app would rather run its own probe,
+set `mode = "synthetic"`:
+
+```
+POST /probe/delivery  {"probe_id", "inbox"}  -> 200 {"probe_id": <echoed>, "delivered": bool, "latency_ms"?, "error"?}
+```
+
+### Calling it
+
+```python
+# Hamza: inside the 30-second polling loop. It never raises on network errors.
+from agents import run_live_check
+check = run_live_check("messaging", base_url=None, timeout=None)   # -> LiveCheckResult
+if not check.ok:
+    ...  # hand to Mo as live incident evidence: check.model_dump()
+
+# Mo: diagnose. Accepts a CI RepairRequest or a LiveIncident.
+from agents import LiveIncident, diagnose_incident
+result = diagnose_incident(LiveIncident(
+    check=check, repo_path="/srv/checkout", deployed_sha="3f2c9e1",
+    service_logs=recent_log_text, recent_diff=diff_text, source_files={...},
+    ci_status="passing",            # "passing" | "failing" | "unknown"
+))
+result.outcome      # "healthy" | "needs_review" | "verified"
+result.route        # "none" | "service_health" | "investigate" | "code_repair"
+result.likely_cause, result.recommended_actions, result.next_diagnostic
+result.recovery     # "pending_deploy" when a patch is verified
+result.repair       # RepairResult with the verified patch (route == "code_repair")
+
+# Mo: after the fix is deployed or the service is restored.
+from agents import confirm_recovery
+recovery = confirm_recovery("messaging", previous_probe_id=check.probe_id)
+recovery.recovered  # True only if a *fresh* probe id was confirmed delivered
+```
+
+### How a failed live check is routed
+
+1. **Unreachable** (timeout, refused, network error): route `service_health`. The result
+   recommends checking deployment, process and host health. There is no model call and no
+   code repair. A timeout alone leaves the cause `unknown`. If `ci_status="passing"`, the
+   reason notes that a code regression is not the first suspect.
+2. **Health endpoint errors**: route `service_health`.
+3. **Reachable but not delivered**: the model compares the probe result with service logs,
+   the recent diff and source. Evidence must quote those inputs verbatim. The pipeline
+   continues to code repair only when:
+   - the diagnosis is grounded and has `failure_class == "code_bug"`, **and**
+   - the app's pytest suite fails at the deployed commit, so the failure reproduces.
+
+   Then the standard repair pipeline runs on that local failure. Otherwise the result is
+   `needs_review` with `next_diagnostic`, for example "check the delivery worker" or
+   "write a regression test that reproduces ...".
+4. **Verified patch**: `recovery = "pending_deploy"`. Recovery is reported only by
+   `confirm_recovery`, once a fresh probe is confirmed delivered.
+
+## Setup
+
+```bash
+uv venv --python 3.12 agents/.venv            # or: python3.12 -m venv agents/.venv
+uv pip install --python agents/.venv/bin/python -r agents/requirements.txt
+export OPENAI_API_KEY=...                     # optional for tests; required for live use
+export OPENAI_MODEL=gpt-4.1-mini              # optional, this is the default
+```
+
+## Tests
+
+```bash
+agents/.venv/bin/python -m pytest agents/tests -q
+```
+
+Run the live incident scenarios (healthy, unreachable while CI is green, responds but no
+delivery then fix and recovery, and a paused queue). They all run against the Messaging fixture:
+
+```bash
+agents/.venv/bin/python -m pytest agents/tests/test_live_scenarios.py -s -q
+```
+
+To try the CLI by hand, start the fixture in one terminal and check it from another:
+
+```bash
+agents/.venv/bin/python -m agents.tests.messaging_support --mode bug --port 8002   # healthy | bug | paused | hang
+agents/.venv/bin/python -m agents live-check messaging --fixture
+```
+
+Replay the Shopping discount regression end to end, printing the failing-before and
+passing-after pytest output and the patch:
+
+```bash
+agents/.venv/bin/python -m pytest agents/tests/test_shopping_repair.py::test_shopping_discount_failure_reproduced_then_fixed -s -q
+```
+
+These tests use a stub model. `test_live_openai.py` runs the same regression
+against the real model and is skipped unless `OPENAI_API_KEY` is set.
+
+## Interface for the orchestrator
+
+Mo's orchestrator (`feature/mongodb-workflow-recovery`) imports `agents.patcher.Repairer`:
+
+```python
+from agents.patcher import Repairer
+patch = Repairer(repo_path="/srv/checkout").repair(failed_run, similar)  # Mo's FailedRun, memory matches
+patch["tests_passed"], patch["diff"], patch["files"], patch["changed_files"], patch["summary"], patch["root_cause"]
+```
+
+It reads source files and the recent diff from `repo_path` (or `OPSRELAY_REPO_PATH`) at
+`commit_sha`. Then it runs the pipeline below and returns Mo's `PatchResult` dict, where
+`files` holds the full patched file contents, plus `outcome` and `reason`.
+
+The typed call underneath:
+
+```python
+from agents import PriorIncident, RepairRequest, repair_ci_failure
+
+result = repair_ci_failure(RepairRequest(
+    app="shopping",                        # key in agents/apps.toml
+    repo_path="/srv/opsrelay/checkouts/demo",  # local clone containing commit_sha (read only)
+    commit_sha="3f2c9e1",
+    failed_test_logs=job_log_text,         # raw GitHub Actions job log
+    recent_diff=diff_text,                 # e.g. `git diff <parent> <sha>`
+    source_files={"shopping/src/shopping/cart.py": cart_source_at_sha},
+    similar_incidents=[PriorIncident(id="inc-42", summary="...", root_cause="...")],
+))
+
+result.outcome          # "verified" | "needs_review"
+result.reason           # why, in one line
+result.flaky            # failing tests passed on a baseline rerun
+result.diagnosis        # likely_cause, explanation, evidence[], suspect_files (ranked),
+                        # failing_tests, traceback_frames[], confidence
+result.patch            # chosen unified diff against commit_sha (git apply -p1)
+result.changed_files
+result.baseline         # [TestRun] failing tests on the original code, one per rerun
+result.reproduce_after_patch  # [TestRun] same tests with the chosen patch
+result.patched_suite    # TestRun: full app suite after the patch
+result.attempts         # [CandidateAttempt] every candidate, round, outcome and output
+result.started_at, result.finished_at
+```
+
+`repair_ci_failure(request, llm=...)` accepts any object with
+`generate(schema, system, user)` in place of the default OpenAI model.
+Model and API errors are raised so the orchestrator can apply its own retry policy.
+
+## Safety rules
+
+- **Evidence is grounded.** Each excerpt must appear verbatim in the input it cites.
+  At least one must come from the current run, because similar incidents are hints,
+  not proof. Suspect files must be supplied and sit inside the app's source dirs.
+  If any of these checks fails, the result is `needs_review`.
+- **Untrusted input stays data.** CI logs, diffs, source and incidents reach the
+  model inside delimited blocks. Attempts to close a block early are neutralised.
+- **Patches stay in scope.** A patch may only make in-place edits to existing files
+  under `source_dirs`, with at most 3 files and 60 changed lines. Tests, CI config,
+  dependency or build manifests, secrets, hidden files, new or deleted files,
+  renames, mode changes and binary patches are all rejected. The verifier checks
+  scope again before applying anything.
+- **Verification is isolated.** The verifier exports the commit with `git archive`
+  into a temp directory, so the developer's checkout is never modified. It runs
+  pytest with a scrubbed environment (no API keys, `MONGODB_URI` or `GITHUB_TOKEN`),
+  using fixed arguments from `apps.toml` plus validated test ids, under a timeout
+  that kills the whole process group.
+- **Not a container.** Tests can still reach the network, and the app's
+  dependencies must be installed in the verifier's Python environment.
+
+## App configuration
+
+`apps.toml` sets each app's root, editable `source_dirs`, `test_dir`, fixed
+`pytest_args` and timeout. `baseline_runs`, `max_candidates` and `max_rounds` default to
+2, 3 and 2 and can be set per app. The Shopping and Messaging entries are placeholders until
+the demo apps land in `shopping/` and `message-platform/`.
