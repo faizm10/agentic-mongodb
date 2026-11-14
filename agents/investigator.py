@@ -89,7 +89,9 @@ class _DiagnosisDraft(BaseModel):
 
 
 # `FAILED path/to/test_x.py::test_name - AssertionError: ...` or `ERROR path::name`.
-_FAILED_RE = re.compile(r"^(?:FAILED|ERROR)\s+(\S+\.py(?:::\S+)?)", re.MULTILINE)
+# The path part has no single ":", so captured-log lines like
+# "ERROR    novamart:main.py:39 {...}" are not mistaken for node ids.
+_FAILED_RE = re.compile(r"^(?:FAILED|ERROR)\s+([\w./-]+\.py(?:::\S+)?)", re.MULTILINE)
 # Python: `File "/home/runner/work/x/x/shopping/src/shopping/cart.py", line 25, in total`
 _PY_FRAME_RE = re.compile(r'File "(?P<path>[^"]+\.py)", line (?P<line>\d+)(?:, in (?P<func>[\w<>.]+))?')
 # pytest: `src/shopping/cart.py:25: in total` and the final `tests/test_cart.py:22: AssertionError`
