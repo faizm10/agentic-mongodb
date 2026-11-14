@@ -17,9 +17,7 @@ node_modules/
 .DS_Store
 .idea/
 .vscode/
-.venv/
-__pycache__/
-.pytest_cache/
-.env
-.env.*
 .gstack/
+
+# Local fake GitHub state from agents/dev_demo.py
+agents/.fake_github.json
