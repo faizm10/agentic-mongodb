@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { Activity, ChevronRight, Clock3, Cpu, Database, Timer } from "lucide-react";
 import { IncidentTimeline } from "@/components/incidents";
+import { OutageControls } from "@/components/outage-controls";
 import { StatusLegend, UptimeBars } from "@/components/charts";
 import { UptimeFigure, uptimeBasis } from "@/components/uptime";
 import { ErrorPanel, Shell, Skeleton, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
@@ -29,7 +30,7 @@ function ServiceCard({ s, window }: { s: ServiceOverview; window: Window }) {
             <h3 className="text-base font-semibold tracking-tight">{s.name}</h3>
             <StatusPill status={s.current.status} size="sm" />
           </div>
-          <p className="mt-1 text-sm text-muted">{s.current.status === "operational" ? s.description : s.current.summary}</p>
+          <p className="mt-1 text-sm text-muted">{s.description}</p>
         </div>
         <Link
           href={`/services/${s.id}`}
@@ -146,6 +147,8 @@ export default function Overview() {
               </div>
             </div>
           </section>
+
+          <OutageControls services={data.services} onChange={reload} />
 
           <div className="flex flex-wrap items-center justify-between gap-3">
             <h2 className="text-sm font-semibold text-muted">Services</h2>

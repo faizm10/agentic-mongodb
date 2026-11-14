@@ -120,6 +120,7 @@ async def probe_functional(client: httpx.AsyncClient, service: ServiceConfig) ->
                            error=_short(f"HTTP {response.status_code}: response is not a probe report: {response.text[:200]!r}"))
     details = {
         "status": body.get("status"),
+        "demo_outage": body.get("demo_outage") is True,
         "summary": body.get("summary"),
         "failed_checks": body.get("failed_checks", []),
         "failures": _probe_failures(body),

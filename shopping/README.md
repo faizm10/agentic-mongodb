@@ -4,7 +4,7 @@ NovaMart is a premium-looking demo e-commerce store built for the **OpsRelay** h
 
 - a polished **Next.js + TypeScript + Tailwind** storefront (homepage, search, filters, product pages, cart, checkout, order confirmation)
 - a **FastAPI** backend with product, cart-quote, checkout, order and health endpoints, persisting demo orders to a local JSON file
-- **85 Pytest tests** covering pricing, quantity, discounts, inventory, orders and checkout
+- **88 Pytest tests** covering pricing, quantity, discounts, inventory, orders, checkout, and demo outages
 - a **side-effect-free checkout health probe** that exercises the real checkout logic
 - **`inject_bug.py`**, which injects and resets three reproducible production bugs for OpsRelay's AI investigator to diagnose
 
@@ -217,7 +217,7 @@ Discounts never exceed the subtotal. Inventory comes from the catalog stock minu
 
 ```bash
 cd shopping/backend
-.venv/bin/pytest            # 85 tests, ~0.3s
+.venv/bin/pytest            # 88 tests
 ```
 
 | File | Component / capability | Covers |

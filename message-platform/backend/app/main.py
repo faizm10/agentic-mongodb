@@ -22,8 +22,8 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import __version__, conversations, db, delivery, messages, monitor, users
-from .errors import MessagingError
+from . import __version__, conversations, db, delivery, demo_outage, messages, monitor, users
+from .errors import MessageServiceUnavailableError, MessagingError
 from .realtime import ConnectionManager
 from .schemas import (
     ConversationOut,
@@ -120,6 +120,10 @@ def create_app(
     def me(user_id: str | None) -> str:
         return users.get_user(conn, user_id)["id"]
 
+    def require_receiving() -> None:
+        if demo_outage.mode(path) in {"receive", "both"}:
+            raise MessageServiceUnavailableError("Messages are temporarily unavailable.")
+
     async def notify_receipts(changes: list[dict[str, Any]]) -> None:
         by_sender: dict[str, list[dict[str, Any]]] = {}
         for c in changes:
@@ -129,6 +133,8 @@ def create_app(
 
     async def push_message(message: dict[str, Any], event: str = "message.upserted") -> set[str]:
         members = conversations.participant_ids(conn, message["conversation_id"])
+        if demo_outage.mode(path) in {"receive", "both"}:
+            members = [message["sender_id"]]
         return await manager.send_to_users(members, {"type": event, "message": message})
 
     # ------------------------------------------------------------- monitoring
@@ -151,6 +157,16 @@ def create_app(
     def probe() -> JSONResponse:
         """Functional correctness probe. 200 when healthy, 503 when any business rule fails."""
         report = monitor.run_probe(path)
+        if demo_outage.mode(path):
+            report["demo_outage"] = True
+            report["checks"].append({
+                "service": SERVICE_ID, "check": "customer_messaging", "component": "messages",
+                "status": "fail", "failure_reason": "A customer-facing messaging flow is unavailable.",
+                "details": {}, "timestamp": datetime.now(timezone.utc).isoformat(), "duration_ms": 0.0,
+            })
+            report["failed_checks"].append("customer_messaging")
+            report["summary"] = f"{len(report['checks']) - len(report['failed_checks'])}/{len(report['checks'])} checks passed"
+            report["status"] = "unhealthy"
         if report["status"] != "healthy":
             _log(logging.ERROR, "messaging_probe_failed", failed_checks=report["failed_checks"], report=report)
         return JSONResponse(status_code=200 if report["status"] == "healthy" else 503, content=report)
@@ -167,10 +183,12 @@ def create_app(
     # ---------------------------------------------------------- conversations
     @app.get("/api/conversations", response_model=list[ConversationOut], tags=["conversations"])
     def list_conversations(x_demo_user: str | None = Header(default=None)) -> list[dict[str, Any]]:
+        require_receiving()
         return conversations.list_conversations(conn, me(x_demo_user))
 
     @app.get("/api/conversations/{conversation_id}", response_model=ConversationOut, tags=["conversations"])
     def get_conversation(conversation_id: str, x_demo_user: str | None = Header(default=None)) -> dict[str, Any]:
+        require_receiving()
         return conversations.conversation_summary(conn, conversation_id, me(x_demo_user))
 
     @app.post("/api/conversations", response_model=ConversationOut, tags=["conversations"])
@@ -202,6 +220,7 @@ def create_app(
         limit: int = Query(default=messages.DEFAULT_PAGE_SIZE, ge=1, le=500),
         before_seq: int | None = Query(default=None, ge=1),
     ):
+        require_receiving()
         user_id = me(x_demo_user)
         page = messages.list_history(conn, conversation_id, user_id, limit=limit + 1, before_seq=before_seq)
         has_more = len(page) > limit
@@ -220,6 +239,7 @@ def create_app(
 
     @app.post("/api/conversations/{conversation_id}/read", response_model=ReadOut, tags=["messages"])
     async def mark_read(conversation_id: str, x_demo_user: str | None = Header(default=None)):
+        require_receiving()
         user_id = me(x_demo_user)
         changes = delivery.mark_conversation_read(conn, conversation_id, user_id, now())
         await notify_receipts(changes)
@@ -233,6 +253,8 @@ def create_app(
     # --------------------------------------------------------------- messages
     @app.post("/api/messages", response_model=MessageOut, tags=["messages"])
     async def send(body: SendMessageIn, request: Request, x_demo_user: str | None = Header(default=None)):
+        if demo_outage.mode(path) in {"send", "both"}:
+            raise MessageServiceUnavailableError("Message sending is temporarily unavailable.")
         user_id = me(x_demo_user)
         message, created = messages.send_message(
             conn, conversation_id=body.conversation_id, sender_id=user_id, body=body.body, now=now(),
@@ -279,6 +301,7 @@ def create_app(
 
     @app.get("/api/search", response_model=SearchOut, tags=["messages"])
     def search(q: str = Query(min_length=1, max_length=100), x_demo_user: str | None = Header(default=None)):
+        require_receiving()
         user_id = me(x_demo_user)
         needle = q.strip().lower()
         convs = [
@@ -290,6 +313,9 @@ def create_app(
     # -------------------------------------------------------------- websocket
     @app.websocket("/ws/{user_id}")
     async def websocket_endpoint(websocket: WebSocket, user_id: str):
+        if demo_outage.mode(path) in {"receive", "both"}:
+            await websocket.close(code=1013, reason="Messages are temporarily unavailable")
+            return
         try:
             users.get_user(conn, user_id)
         except MessagingError:

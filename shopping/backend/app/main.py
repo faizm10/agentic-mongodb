@@ -20,7 +20,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import __version__, pricing
+from . import __version__, demo_outage, pricing
 from .catalog import Catalog, Product
 from .checkout import CartItem, CheckoutService, quote_to_dict
 from .errors import NovaMartError
@@ -44,7 +44,7 @@ def build_service(data_dir: Path | str | None = None) -> CheckoutService:
     return CheckoutService(Catalog(), DemoStore(directory))
 
 
-def product_to_dict(product: Product, available: int) -> dict[str, Any]:
+def product_to_dict(product: Product, available: int, data_dir: Path | None = None) -> dict[str, Any]:
     return {
         "id": product.id,
         "slug": product.slug,
@@ -54,7 +54,7 @@ def product_to_dict(product: Product, available: int) -> dict[str, Any]:
         "description": product.description,
         "price_cents": product.price_cents,
         "compare_at_cents": product.compare_at_cents,
-        "image": product.image,
+        "image": demo_outage.image_url(product.image, data_dir) if data_dir else product.image,
         "rating": product.rating,
         "review_count": product.review_count,
         "features": list(product.features),
@@ -156,7 +156,8 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
         for p in service.catalog.products:
             counts[p.category] = counts.get(p.category, 0) + 1
         return [
-            {"slug": c.slug, "name": c.name, "blurb": c.blurb, "image": c.image, "product_count": counts.get(c.slug, 0)}
+            {"slug": c.slug, "name": c.name, "blurb": c.blurb,
+             "image": demo_outage.image_url(c.image, service.store.data_dir), "product_count": counts.get(c.slug, 0)}
             for c in service.catalog.categories
         ]
 
@@ -183,7 +184,7 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
         )
         if featured:
             products = [p for p in products if p.featured]
-        return {"count": len(products), "products": [product_to_dict(p, available[p.id]) for p in products]}
+        return {"count": len(products), "products": [product_to_dict(p, available[p.id], service.store.data_dir) for p in products]}
 
     @app.get("/api/products/{product_id}", tags=["catalog"])
     def get_product(product_id: str) -> dict[str, Any]:
@@ -191,8 +192,8 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
         available = service.availability()
         related = [p for p in service.catalog.products if p.category == product.category and p.id != product.id][:4]
         return {
-            **product_to_dict(product, available[product.id]),
-            "related": [product_to_dict(p, available[p.id]) for p in related],
+            **product_to_dict(product, available[product.id], service.store.data_dir),
+            "related": [product_to_dict(p, available[p.id], service.store.data_dir) for p in related],
         }
 
     @app.get("/api/promotions", tags=["catalog"])
@@ -206,7 +207,10 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
     @app.post("/api/cart/quote", tags=["checkout"])
     def quote(body: QuoteRequest) -> dict[str, Any]:
         items = [CartItem(i.product_id, i.quantity) for i in body.items]
-        return quote_to_dict(service.quote(items, body.promo_code, body.shipping_method))
+        result = quote_to_dict(service.quote(items, body.promo_code, body.shipping_method))
+        for line in result["lines"]:
+            line["image"] = demo_outage.image_url(line["image"], service.store.data_dir)
+        return result
 
     @app.post("/api/checkout", status_code=201, tags=["checkout"])
     def checkout(body: CheckoutRequest, request: Request) -> dict[str, Any]:

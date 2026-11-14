@@ -19,7 +19,7 @@ import time
 from datetime import datetime, timezone
 from typing import Any, Callable
 
-from . import inventory, pricing
+from . import demo_outage, inventory, pricing
 from .catalog import Catalog, Product
 from .checkout import CartItem, CheckoutService
 from .errors import InsufficientStockError, NovaMartError
@@ -203,9 +203,20 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
 
     check("probe_has_no_side_effects", "probe", "backend/app/probe.py", side_effect_check)
 
+    # The demo controls affect real customer requests. Report their state through
+    # the same functional endpoint so the uptime worker detects the outage.
+    active_mode = demo_outage.mode(store.data_dir)
+    if active_mode:
+        checks.append({
+            "name": "customer_flow", "component": "storefront", "source": "backend/app/main.py",
+            "status": "fail", "message": "A customer-facing flow is unavailable.",
+            "duration_ms": 0.0,
+        })
+
     failures = [c for c in checks if c["status"] == "fail"]
     return {
         "probe": "checkout",
+        "demo_outage": bool(active_mode),
         "status": "unhealthy" if failures else "healthy",
         "summary": f"{len(checks) - len(failures)}/{len(checks)} checks passed",
         "checked_at": datetime.now(timezone.utc).isoformat(),

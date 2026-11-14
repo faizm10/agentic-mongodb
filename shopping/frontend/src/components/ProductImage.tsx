@@ -17,8 +17,8 @@ type Props = {
 };
 
 export function ProductImage({ src, alt, width, height, zoom, fx, fy, className = "", priority }: Props) {
-  const [failed, setFailed] = useState(false);
-  if (failed || !src) {
+  const [failedSrc, setFailedSrc] = useState<string | null>(null);
+  if (failedSrc === src || !src) {
     return (
       <div
         role="img"
@@ -35,7 +35,7 @@ export function ProductImage({ src, alt, width, height, zoom, fx, fy, className 
       alt={alt}
       loading={priority ? "eager" : "lazy"}
       decoding="async"
-      onError={() => setFailed(true)}
+      onError={() => setFailedSrc(src)}
       className={`object-cover ${className}`}
     />
   );

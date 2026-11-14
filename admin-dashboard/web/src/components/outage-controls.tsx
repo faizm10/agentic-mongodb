@@ -1,0 +1,125 @@
+"use client";
+
+import { useState } from "react";
+import { RotateCcw, Zap } from "lucide-react";
+import type { ServiceOverview } from "@/lib/api";
+import { StatusPill } from "@/components/ui";
+
+type ServiceId = "novamart" | "novaconnect";
+type Scenario = "payment" | "images" | "inventory" | "send" | "receive" | "both";
+
+const GROUPS: { id: ServiceId; name: string; actions: { scenario: Scenario; label: string }[] }[] = [
+  {
+    id: "novamart",
+    name: "NovaMart",
+    actions: [
+      { scenario: "payment", label: "Fail payment" },
+      { scenario: "images", label: "Fail image loading" },
+      { scenario: "inventory", label: "Empty inventory" },
+    ],
+  },
+  {
+    id: "novaconnect",
+    name: "NovaConnect",
+    actions: [
+      { scenario: "send", label: "Stop sending" },
+      { scenario: "receive", label: "Stop receiving" },
+      { scenario: "both", label: "Stop both" },
+    ],
+  },
+];
+
+export function OutageControls({ services, onChange }: { services: ServiceOverview[]; onChange: () => void }) {
+  const [token, setToken] = useState("");
+  const [pending, setPending] = useState<ServiceId | null>(null);
+  const [notice, setNotice] = useState("");
+
+  async function change(id: ServiceId, scenario?: Scenario) {
+    if (!token.trim()) {
+      setNotice("Enter the admin token to use demo controls.");
+      return;
+    }
+    setPending(id);
+    setNotice("");
+    try {
+      const response = await fetch(`/api/v1/demo/outages/${id}`, {
+        method: scenario ? "POST" : "DELETE",
+        headers: { Authorization: `Bearer ${token.trim()}`, ...(scenario ? { "Content-Type": "application/json" } : {}) },
+        body: scenario ? JSON.stringify({ scenario }) : undefined,
+      });
+      if (!response.ok) {
+        setNotice(response.status === 401 ? "Admin token was not accepted." : response.status === 403
+          ? "Set OPSRELAY_ADMIN_TOKEN on the uptime API to enable these controls."
+          : "Could not change the demo outage. Check that the apps and uptime API are running from this checkout.");
+        return;
+      }
+      setNotice(scenario ? "Outage requested. Waiting for the next status check." : "Recovery requested. Waiting for the next status check.");
+      onChange();
+      window.setTimeout(onChange, 1800);
+    } catch {
+      setNotice("Could not reach the uptime API.");
+    } finally {
+      setPending(null);
+    }
+  }
+
+  return (
+    <section className="panel overflow-hidden" aria-labelledby="outage-controls-title">
+      <div className="flex flex-wrap items-center gap-4 border-b border-line px-5 py-4 sm:px-6">
+        <span className="flex h-9 w-9 items-center justify-center rounded-lg border border-crit/30 bg-crit/10 text-crit">
+          <Zap className="h-4 w-4" aria-hidden="true" />
+        </span>
+        <div className="min-w-0 flex-1">
+          <h2 id="outage-controls-title" className="text-sm font-semibold">Demo outage controls</h2>
+          <p className="mt-0.5 text-xs text-muted">Change a local app, then watch its monitored status update. Restore it when finished.</p>
+        </div>
+        <label className="flex items-center gap-2 text-xs text-muted">
+          Admin token
+          <input
+            type="password"
+            autoComplete="off"
+            value={token}
+            onChange={(event) => setToken(event.target.value)}
+            placeholder="Required"
+            className="w-36 rounded-lg border border-line-strong bg-page px-3 py-2 text-sm text-ink placeholder:text-faint sm:w-44"
+          />
+        </label>
+      </div>
+      <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+        {GROUPS.map((group) => {
+          const service = services.find((item) => item.id === group.id);
+          return (
+            <div key={group.id} className="p-5 sm:p-6">
+              <div className="flex items-center justify-between gap-3">
+                <h3 className="text-sm font-semibold">{group.name}</h3>
+                {service && <StatusPill status={service.current.status} size="sm" />}
+              </div>
+              <div className="mt-4 grid gap-2 sm:grid-cols-3">
+                {group.actions.map((action) => (
+                  <button
+                    key={action.scenario}
+                    type="button"
+                    disabled={pending !== null}
+                    onClick={() => change(group.id, action.scenario)}
+                    className="min-h-11 rounded-lg border border-crit/25 bg-crit/5 px-3 py-2 text-left text-xs font-medium text-ink transition hover:border-crit/60 hover:bg-crit/10 disabled:cursor-wait disabled:opacity-50"
+                  >
+                    {action.label}
+                  </button>
+                ))}
+              </div>
+              <button
+                type="button"
+                disabled={pending !== null}
+                onClick={() => change(group.id)}
+                className="mt-3 inline-flex min-h-10 items-center gap-1.5 rounded-lg border border-line px-3 py-2 text-xs font-medium text-muted transition hover:border-line-strong hover:text-ink disabled:cursor-wait disabled:opacity-50"
+              >
+                <RotateCcw className="h-3.5 w-3.5" aria-hidden="true" /> Restore {group.name}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+      {notice && <p className="border-t border-line px-5 py-3 text-xs text-muted sm:px-6" role="status">{notice}</p>}
+    </section>
+  );
+}

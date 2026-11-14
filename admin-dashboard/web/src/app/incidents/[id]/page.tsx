@@ -5,7 +5,7 @@ import { use, useState } from "react";
 import { ArrowLeft, Bot, ChevronDown, ExternalLink, GitPullRequest, Workflow } from "lucide-react";
 import { RouteBadge } from "@/components/incidents";
 import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill } from "@/components/ui";
-import { type Incident, usePoll } from "@/lib/api";
+import { type Incident, isDemoIncident, usePoll } from "@/lib/api";
 import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
 
 type Handoff = Record<string, unknown> & {
@@ -28,10 +28,11 @@ const EVENT_LABEL: Record<string, string> = {
 export default function IncidentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const inc = usePoll<Incident>(`/api/v1/incidents/${encodeURIComponent(id)}`);
-  const handoff = usePoll<Handoff>(`/api/v1/incidents/${encodeURIComponent(id)}/evidence`);
+  const handoff = usePoll<Handoff>(inc.data && !isDemoIncident(inc.data) ? `/api/v1/incidents/${encodeURIComponent(id)}/evidence` : null);
   const [showJson, setShowJson] = useState(false);
   const now = useNow();
   const i = inc.data;
+  const demo = i ? isDemoIncident(i) : false;
   const live = i ? (i.state === "open" ? (now - new Date(i.started_at).getTime()) / 1000 : i.duration_seconds) : 0;
 
   return (
@@ -51,20 +52,20 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               <div className="min-w-0 flex-1">
                 <p className="font-mono text-xs text-faint">{i.id}</p>
                 <h1 className="mt-1 text-2xl font-semibold tracking-tight">{i.title}</h1>
-                <p className="mt-1 text-sm text-muted">{i.summary}</p>
+                <p className="mt-1 text-sm text-muted">{demo ? `Service status: ${i.state === "open" ? i.severity : "recovered"}.` : i.summary}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
                   <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${i.state === "open" ? "bg-crit/15 text-crit" : "bg-ok/10 text-ok"}`}>
                     {i.state === "open" ? "Ongoing" : "Resolved"}
                   </span>
                   <StatusPill status={i.peak_severity} size="sm" />
-                  <RouteBadge route={i.investigation_route} />
+                  {!demo && <RouteBadge route={i.investigation_route} />}
                 </div>
               </div>
             </div>
             <div className="mt-6 grid grid-cols-2 gap-5 border-t border-line pt-5 md:grid-cols-4">
               <Stat label="Started" value={clock(i.started_at)} sub={new Date(i.started_at).toLocaleDateString()} />
               <Stat label={i.state === "open" ? "Ongoing for" : "Duration"} value={duration(live)} sub={i.resolved_at ? `recovered ${clock(i.resolved_at)}` : "until recovery"} />
-              <Stat label="Failure type" value={<span className="text-base">{FAILURE_LABELS[i.failure_type ?? ""] ?? "—"}</span>} sub={`${i.failed_check_count} failed checks`} />
+              <Stat label={demo ? "Status" : "Failure type"} value={<span className="text-base">{demo ? (i.state === "open" ? i.severity : "recovered") : FAILURE_LABELS[i.failure_type ?? ""] ?? "—"}</span>} sub={`${i.failed_check_count} failed checks`} />
               <Stat label="Service" value={<span className="text-base">{i.service_name}</span>} sub={`agent app: ${i.app}`} />
             </div>
           </section>
@@ -80,7 +81,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     </span>
                     <p className="text-sm font-medium">{EVENT_LABEL[e.type] ?? e.type}</p>
                     <p className="text-xs text-faint">{clock(e.at, true)}</p>
-                    <p className="mt-1 text-sm text-muted">{e.message}</p>
+                    <p className="mt-1 text-sm text-muted">{demo ? "Service status update recorded." : e.message}</p>
                     {e.check_id && <p className="mt-1 font-mono text-[11px] text-faint">check {e.check_id}</p>}
                   </li>
                 ))}
@@ -94,7 +95,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
             </section>
 
             <div className="space-y-6">
-              <section className="panel p-6">
+              {!demo && <section className="panel p-6">
                 <h2 className="flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-muted" /> AI investigation hand-off</h2>
                 <p className="mt-2 text-sm text-muted">{ROUTE_LABELS[i.investigation_route].hint}</p>
                 {i.evidence.route_reason && <p className="mt-2 text-xs leading-relaxed text-faint">{i.evidence.route_reason}</p>}
@@ -112,7 +113,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     </ul>
                   </>
                 )}
-              </section>
+              </section>}
 
               <section className="panel p-6">
                 <h2 className="flex items-center gap-2 text-sm font-semibold"><Workflow className="h-4 w-4 text-muted" /> CI & repair links</h2>
@@ -145,7 +146,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
             </div>
           </div>
 
-          <section className="panel p-6">
+          {!demo && <section className="panel p-6">
             <h2 className="text-sm font-semibold">Evidence</h2>
             {handoff.data && handoff.data.probe_failures.length > 0 ? (
               <ul className="mt-4 space-y-3">
@@ -172,7 +173,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                 {JSON.stringify(handoff.data, null, 2)}
               </pre>
             )}
-          </section>
+          </section>}
         </div>
       )}
     </Shell>

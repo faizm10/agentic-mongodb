@@ -86,3 +86,9 @@ class OrderStoreError(NovaMartError):
     status_code = 503
     code = "ORDER_STORE_UNAVAILABLE"
     component = "orders"
+
+
+class PaymentUnavailableError(NovaMartError):
+    status_code = 503
+    code = "PAYMENT_UNAVAILABLE"
+    component = "checkout"
