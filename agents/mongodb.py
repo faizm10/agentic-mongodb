@@ -62,6 +62,23 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def _escape_credentials(uri: str) -> str:
+    """URL-encode user/password so passwords with @ : / ? # % work as pasted."""
+    from urllib.parse import quote_plus, unquote_plus
+
+    scheme, sep, rest = uri.partition("://")
+    if not sep:
+        return uri
+    # Host part never contains '@', so the LAST '@' separates credentials.
+    userinfo, at, hostpart = rest.rpartition("@")
+    if not at:
+        return uri
+    user, colon, pwd = userinfo.partition(":")
+    user = quote_plus(unquote_plus(user))
+    pwd = quote_plus(unquote_plus(pwd)) if colon else ""
+    return f"{scheme}://{user}{':' + pwd if colon else ''}@{hostpart}"
+
+
 def get_client(uri: str | None = None) -> MongoClient:
     global _client
     if _client is None:
@@ -71,7 +88,7 @@ def get_client(uri: str | None = None) -> MongoClient:
         if "<" in uri:
             raise RuntimeError("MONGODB_URI in .env still has <placeholders>; paste the real "
                                "string from Atlas -> Connect -> Drivers")
-        _client = MongoClient(uri, appname="opsrelay", tz_aware=True)
+        _client = MongoClient(_escape_credentials(uri), appname="opsrelay", tz_aware=True)
     return _client
 
 
