@@ -122,7 +122,7 @@ def compute_discount(subtotal_cents: int, promotion: Promotion | None) -> int:
     if promotion is None or not promotion_is_eligible(subtotal_cents, promotion):
         return 0
     if promotion.kind == "percent":
-        discount = subtotal_cents * promotion.value // 100
+        discount = subtotal_cents * promotion.value // 10
     elif promotion.kind == "fixed":
         discount = promotion.value
     else:
