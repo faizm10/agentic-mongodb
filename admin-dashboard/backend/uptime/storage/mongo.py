@@ -29,6 +29,7 @@ STATUS = "uptime_status"
 INCIDENTS = "uptime_incidents"
 WORKER = "uptime_worker"
 AGENT_INCIDENTS = "incidents"  # owned by agents/mongodb.py; read-only here
+AGENT_STEPS = "workflow_steps"  # owned by agents/mongodb.py; read-only here
 
 
 def escape_credentials(uri: str) -> str:
@@ -259,3 +260,26 @@ class MongoStorage:
             {"_id": 1, "app": 1, "status": 1, "stage": 1, "html_url": 1, "pr": 1, "commit_sha": 1, "created_at": 1},
         ).sort("created_at", DESCENDING).limit(5)
         return [dict(d) for d in cursor]
+
+    def get_agent_activity(self, uptime_incident_id: str) -> dict[str, Any] | None:
+        """Read only the agent run linked to this exact uptime incident.
+
+        Never return audit evidence or errors: these may contain private logs and
+        would also reveal which outage scenario the operator selected.
+        """
+        doc = self.db[AGENT_INCIDENTS].find_one(
+            {"source": "live", "live.uptime_incident_id": uptime_incident_id},
+            {"_id": 1, "status": 1, "stage": 1, "created_at": 1, "updated_at": 1,
+             "lease.expires_at": 1, "pr.url": 1},
+        )
+        if doc is None:
+            return None
+        step = self.db[AGENT_STEPS].find_one(
+            {"incident_id": doc["_id"]},
+            {"_id": 0, "stage": 1, "outcome": 1, "at": 1},
+            sort=[("at", DESCENDING)],
+        )
+        return {"status": doc.get("status"), "stage": doc.get("stage"),
+                "created_at": doc.get("created_at"), "updated_at": doc.get("updated_at"),
+                "lease_expires_at": (doc.get("lease") or {}).get("expires_at"),
+                "pr_url": (doc.get("pr") or {}).get("url"), "latest_action": step}

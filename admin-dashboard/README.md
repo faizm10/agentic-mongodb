@@ -303,6 +303,8 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 
 Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout**. On the dashboard overview, choose one of six controls:
 
+When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher starts the three platforms but does not start the repair agent; run `python -m agents.orchestrator worker` separately after configuring MongoDB and the agent credentials.
+
 | App | Controls | Effect |
 | --- | --- | --- |
 | NovaMart | Fail payment, Fail image loading, Empty inventory | Checkout returns 503 before saving an order; storefront image requests fail; or products and checkout show zero stock. |

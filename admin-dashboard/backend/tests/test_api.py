@@ -1,6 +1,7 @@
 """Dashboard API: envelope, independent statuses, uptime from stored checks, incidents, demo scenario."""
 
 import asyncio
+from datetime import timedelta
 
 import pytest
 from fastapi.testclient import TestClient
@@ -53,6 +54,56 @@ def test_independent_statuses_and_real_uptime(env):
     assert up["sufficient"] is False, "2 minutes of a 24 h window is insufficient history"
     assert len(by_id["novamart"]["bars"]) == 96
     assert [i["service_id"] for i in data["active_incidents"]] == ["novamart"]
+
+
+def test_agent_activity_tracks_only_linked_run_and_hides_private_evidence(env):
+    env["apps"].mode["novamart"] = "functional_bug"
+    env["tick"]()
+    c = env["client"]()
+    summary = c.get("/api/v1/summary").json()["data"]
+    incident_id = summary["active_incidents"][0]["id"]
+    activity = summary["agent_activity"]
+    assert len(activity) == 1 and activity[0]["incident_id"] == incident_id
+    if not hasattr(env["storage"], "db"):
+        assert activity[0]["state"] == "unavailable"
+        return
+
+    assert activity[0]["state"] == "waiting"
+    db = env["storage"].db
+    now = env["clock"]()
+    db["incidents"].insert_one({
+        "_id": "repo#unrelated", "source": "live", "live": {"uptime_incident_id": "unrelated"},
+        "status": "open", "stage": "detected", "created_at": now, "updated_at": now,
+    })
+    assert c.get("/api/v1/summary").json()["data"]["agent_activity"][0]["state"] == "waiting"
+
+    agent_id = f"repo#{incident_id}"
+    db["incidents"].insert_one({
+        "_id": agent_id, "source": "live", "live": {"uptime_incident_id": incident_id},
+        "status": "open", "stage": "memory_retrieved", "created_at": now,
+        "updated_at": now, "lease": {"expires_at": now + timedelta(minutes=2)},
+        "last_error": "private diagnosis must stay hidden",
+    })
+    db["workflow_steps"].insert_one({
+        "incident_id": agent_id, "stage": "memory_retrieved", "outcome": "completed",
+        "at": now, "evidence": {"secret": "private diagnosis must stay hidden"},
+    })
+    response = c.get("/api/v1/summary")
+    activity = response.json()["data"]["agent_activity"][0]
+    assert activity["state"] == "working"
+    assert activity["stage"] == "memory_retrieved"
+    assert activity["latest_action"] == {"stage": "memory_retrieved", "outcome": "completed", "at": now.isoformat().replace("+00:00", "Z")}
+    assert "private diagnosis" not in response.text
+
+    env["clock"].advance(121)
+    assert c.get("/api/v1/summary").json()["data"]["agent_activity"][0]["state"] == "waiting"
+
+    db["incidents"].update_one({"_id": agent_id}, {"$set": {
+        "status": "awaiting_merge", "pr": {"url": "https://github.com/example/repo/pull/1"},
+    }})
+    activity = c.get("/api/v1/summary").json()["data"]["agent_activity"][0]
+    assert activity["state"] == "awaiting_review"
+    assert activity["pr_url"] == "https://github.com/example/repo/pull/1"
 
 
 def test_service_detail_checks_latency_and_incidents(env):

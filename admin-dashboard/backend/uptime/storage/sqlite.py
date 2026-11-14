@@ -270,5 +270,8 @@ class SqliteStorage:
     def find_agent_incidents(self, app: str, start: datetime, end: datetime) -> list[dict[str, Any]]:
         return []  # the agents' CI incidents live in MongoDB only
 
+    def get_agent_activity(self, uptime_incident_id: str) -> dict[str, Any] | None:
+        return None  # agent incidents and workflow steps live in MongoDB only
+
     def dump_json(self) -> str:  # debugging helper
         return json.dumps({"checks": self.count_checks()})

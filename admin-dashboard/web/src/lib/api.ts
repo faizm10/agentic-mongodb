@@ -110,6 +110,17 @@ export type Monitoring = {
   storage: StorageInfo;
 };
 
+export type AgentActivity = {
+  incident_id: string;
+  service_name: string;
+  state: "unavailable" | "waiting" | "working" | "awaiting_review" | "needs_attention" | "finished";
+  stage: string | null;
+  started_at: string | null;
+  updated_at: string | null;
+  latest_action: { stage: string; outcome: string; at: string } | null;
+  pr_url: string | null;
+};
+
 export type Summary = {
   overall: { status: Status; label: string; affected_services: string[] };
   window: Window;
@@ -117,6 +128,7 @@ export type Summary = {
   active_incidents: Incident[];
   recent_incidents: Incident[];
   monitoring: Monitoring;
+  agent_activity: AgentActivity[];
 };
 
 export type Probe = {

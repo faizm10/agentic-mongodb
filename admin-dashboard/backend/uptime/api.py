@@ -101,6 +101,23 @@ class MonitoringHealth(BaseModel):
     storage: dict[str, Any]
 
 
+class AgentAction(BaseModel):
+    stage: str
+    outcome: str
+    at: datetime
+
+
+class AgentActivity(BaseModel):
+    incident_id: str
+    service_name: str
+    state: Literal["unavailable", "waiting", "working", "awaiting_review", "needs_attention", "finished"]
+    stage: str | None = None
+    started_at: datetime | None = None
+    updated_at: datetime | None = None
+    latest_action: AgentAction | None = None
+    pr_url: str | None = None
+
+
 class Summary(BaseModel):
     overall: dict[str, Any]
     window: Window
@@ -108,6 +125,7 @@ class Summary(BaseModel):
     active_incidents: list[IncidentOut]
     recent_incidents: list[IncidentOut]
     monitoring: MonitoringHealth
+    agent_activity: list[AgentActivity]
 
 
 class AckIn(BaseModel):
@@ -234,6 +252,30 @@ def create_app(
         return IncidentOut(**incident.model_dump(), duration_seconds=incident.elapsed_seconds(now),
                            service_name=names.get(incident.service_id, incident.service_id), related_ci=related_ci)
 
+    def agent_activity(incident: Incident, now: datetime) -> AgentActivity:
+        name = next((s.name for s in services() if s.id == incident.service_id), incident.service_id)
+        run = storage.get_agent_activity(incident.id)
+        if run is None:
+            state = "unavailable" if storage.describe()["backend"] != "mongodb" else "waiting"
+            return AgentActivity(incident_id=incident.id, service_name=name, state=state)
+        status = run.get("status")
+        lease = run.get("lease_expires_at")
+        if status == "open":
+            state = "working" if lease and lease > now else "waiting"
+        elif status == "awaiting_merge":
+            state = "awaiting_review"
+        elif status in ("needs_review", "failed", "rejected"):
+            state = "needs_attention"
+        elif status == "resolved":
+            state = "finished"
+        else:
+            state = "waiting"
+        pr_url = run.get("pr_url")
+        return AgentActivity(incident_id=incident.id, service_name=name, state=state,
+                             stage=run.get("stage"), started_at=run.get("created_at"),
+                             updated_at=run.get("updated_at"), latest_action=run.get("latest_action"),
+                             pr_url=pr_url if isinstance(pr_url, str) and pr_url.startswith("https://") else None)
+
     def monitoring(now: datetime) -> MonitoringHealth:
         worker = storage.get_worker()
         interval = settings.interval_seconds
@@ -273,10 +315,12 @@ def create_app(
             overall = {"status": "unknown", "label": "Monitoring data incomplete"}
         affected = [o.name for o in overviews if o.current.status in ("down", "degraded")]
         overall["affected_services"] = affected
-        active = [incident_out(i, now) for i in storage.list_incidents(state="open")]
+        open_incidents = storage.list_incidents(state="open")
+        active = [incident_out(i, now) for i in open_incidents]
         recent = [incident_out(i, now) for i in storage.list_incidents(state="resolved", limit=10)]
         return ok(Summary(overall=overall, window=window, services=overviews, active_incidents=active,
-                          recent_incidents=recent, monitoring=monitoring(now)))
+                          recent_incidents=recent, monitoring=monitoring(now),
+                          agent_activity=[agent_activity(i, now) for i in open_incidents]))
 
     @app.get("/api/v1/services", response_model=Envelope[list[ServiceOverview]])
     def list_services(window: Window = "24h"):
