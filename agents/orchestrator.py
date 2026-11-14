@@ -17,7 +17,7 @@ Guarantees
 Teammate contracts (duck-typed)
 -------------------------------
 Hamza  monitor: FailureMonitor.detect_failures() (wrapped by MonitorAdapter below)
-       github.find_pr(repo, branch) -> {"number", "url", ...} | None
+       github: GitHubClient.find_pr + PullRequestPublisher (wrapped by GitHubAdapter below)
        github.open_draft_pr(repo, branch, base_sha, title, body, patch) -> {"number", "url"}
            (must create branch from base_sha if missing, commit patch["files"], open draft PR)
 Faiz   repairer.repair(failed_run, similar_incidents) -> PatchResult
@@ -398,19 +398,57 @@ class MonitorAdapter:
         return runs
 
 
+class PublishFailed(Exception):
+    """GitHub definitively refused the patch (stale base, unsafe path…)."""
+
+
+class GitHubAdapter:
+    """Maps our find_pr / open_draft_pr calls onto Hamza's client + PullRequestPublisher.
+
+    Hamza's publisher is itself idempotent (read-then-write, deterministic branch),
+    so a retry after a crash never creates a second branch or PR.
+    """
+
+    def __init__(self, client, publisher):
+        self.client = client
+        self.publisher = publisher
+
+    def find_pr(self, repo: str, branch: str) -> dict | None:
+        pr = self.client.find_pr(branch, state="all")
+        if pr is None:
+            return None
+        return {"number": pr.number, "url": pr.url, "state": pr.state}
+
+    def open_draft_pr(self, repo: str, branch: str, base_sha: str, title: str,
+                      body: str, patch: dict) -> dict:
+        from agents.github_types import (STATUS_FAILED, STATUS_VERIFIED, PublishRequest,
+                                         fix_branch_name)
+
+        incident_id = branch.removeprefix("agent/fix-")  # Hamza's id: "<run_id>-<attempt>"
+        if fix_branch_name(incident_id) != branch:
+            raise ValueError(f"branch {branch!r} doesn't follow agent/fix-<run>-<attempt>")
+        # Only verified patches reach this stage (patch_verified gate).
+        req = PublishRequest.from_dict({**patch, "tests_passed": True},
+                                       incident_id=incident_id, base_sha=base_sha)
+        res = self.publisher.create_or_find_pr(req)
+        if res.status == STATUS_FAILED:
+            raise PublishFailed(res.detail)
+        if res.status != STATUS_VERIFIED:  # "unknown": ambiguous, safe to retry
+            raise RuntimeError(f"PR publish not confirmed: {res.detail}")
+        return {"number": res.pr_number, "url": res.pr_url}
+
+
 def _build_real():
-    """Wire up teammates' modules (Hamza: GitHub + monitor, Faiz: repair)."""
+    """Wire up teammates' modules (Hamza: GitHub + monitor + publisher, Faiz: repair)."""
     from agents.github_client import GitHubClient
+    from agents.github_publisher import PullRequestPublisher
     from agents.monitor import FailureMonitor
     from agents.patcher import Repairer as FaizRepairer
 
     gh = GitHubClient()
-    missing = [fn for fn in ("find_pr", "open_draft_pr") if not hasattr(gh, fn)]
-    if missing:
-        raise SystemExit(f"GitHubClient is missing {missing} (PR publishing, Hamza's phase 2). "
-                         "Signatures are in the docstring at the top of agents/orchestrator.py.")
     repo_path = os.getenv("OPSRELAY_REPO_PATH", str(Path(__file__).resolve().parents[1]))
-    return (Orchestrator(gh, FaizRepairer(repo_path=repo_path)),
+    return (Orchestrator(GitHubAdapter(gh, PullRequestPublisher(gh)),
+                         FaizRepairer(repo_path=repo_path)),
             MonitorAdapter(gh, FailureMonitor(gh)))
 
 
