@@ -357,3 +357,44 @@ every `POLL_SECONDS` (30), alongside CI. Use `python -m agents.orchestrator live
 
 Settings: `OPSRELAY_LIVE_SERVICES` (default `shopping,messaging`; `none` turns it off),
 `OPSRELAY_SHOPPING_URL`, `OPSRELAY_MESSAGING_URL`, `OPSRELAY_<APP>_LOG_FILE`, `OPSRELAY_<APP>_DEPLOYED_SHA`.
+
+## Reinforcement-learning fix policy (Mo)
+
+OpsRelay learns **which kind of fix works for which kind of failure** from rewards, and
+stores everything it learns in Atlas. It's a contextual bandit (Thompson sampling), so the
+LLM itself is not retrained: the policy's pick is passed to the repair agent as a hint.
+
+| | |
+|---|---|
+| **State** | the failure: app, failing tests or probe checks, and the signal lines of the log, embedded like incident memory |
+| **Actions** | fix playbooks in `rl_policy.PLAYBOOKS`: one targeted fix per known bug (discount divisor, quantity multiplier, stock check, idempotency guard, delivery status, message ordering) plus generic moves (revert last commit, defensive guard, retry flaky test, raise timeout) |
+| **Reward** | 1 if the patch passed the tests, 0 if it failed. It's revised when a human merges the PR (1) or closes it (0) |
+| **Memory** | every attempt is a document in `rl_experiences`, searched with the Atlas Vector Search index `experience_vector_index` |
+
+**How a decision is made:** find the 25 most similar past attempts with Vector Search, then
+build a Beta(successes, failures) belief per action, weighted by similarity. Sample from each
+belief and pick the highest. Actions that failed on similar incidents lose weight, and on a
+retry the action just tried is excluded, so the system learns from its mistakes.
+
+**Wired into the orchestrator:**
+- At `memory_retrieved`, the pick and its ranking are saved on the incident (`rl`). If the pick is backed by enough evidence, it's also shown to the repair agent after the memory matches.
+- At `patch_verified`, the reward is recorded. The action credited is the one the patch actually implements (recognised from the diff).
+- In `check_reviews`, merged or closed PRs update the reward.
+
+**Mock training data:** `mock_incidents.py` generates 100 incidents from the real injectable
+bugs (same files, tests, probe checks and symptoms), as both CI and live-check failures, plus
+2 infrastructure failure types. They're stored in `mock_incidents`, never in `incidents`, so the dashboard
+stays clean. A simulator, with a 95% fix rate for the right playbook, 45% for reverting the last commit
+and close to 0% for the wrong one, provides the rewards during training.
+
+```bash
+python -m agents.rl_policy seed          # store 100 mock incidents in Atlas
+python -m agents.rl_policy train         # 2 passes; also learns from finished real incidents
+python -m agents.rl_policy recommend --app shopping --logs "checkout total is 0 after WELCOME10"
+python -m agents.rl_policy stats         # success rate per app/action (an Atlas aggregation)
+python -m agents.rl_policy clear         # remove all mock data (real experiences are kept)
+```
+
+On Atlas, first-pick accuracy on unseen incidents goes from **13% before training to 83–95%
+after**, depending on the exploration path. Successful mock fixes are also stored as
+`memories` (flagged `mock: true`), so incident-memory Vector Search has history too.
