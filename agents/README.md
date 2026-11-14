@@ -50,12 +50,6 @@ passing-after pytest output and the patch:
 agents/.venv/bin/python -m pytest agents/tests/test_shopping_repair.py::test_shopping_discount_failure_reproduced_then_fixed -s -q
 ```
 
-Write sample results (verified after 2 rounds, flaky, never fixed) for the admin dashboard:
-
-```bash
-agents/.venv/bin/python -m agents.demo --out admin-dashboard/.data/repairs
-```
-
 These tests use a stub model. `test_live_openai.py` runs the same regression
 against the real model and is skipped unless `OPENAI_API_KEY` is set.
 
