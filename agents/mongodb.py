@@ -68,6 +68,9 @@ def get_client(uri: str | None = None) -> MongoClient:
         uri = uri or os.getenv("MONGODB_URI")
         if not uri:
             raise RuntimeError("MONGODB_URI is not set (see .env.example)")
+        if "<" in uri:
+            raise RuntimeError("MONGODB_URI in .env still has <placeholders>; paste the real "
+                               "string from Atlas -> Connect -> Drivers")
         _client = MongoClient(uri, appname="opsrelay", tz_aware=True)
     return _client
 
