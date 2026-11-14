@@ -1,7 +1,7 @@
 # Repair scope and fixed test commands for each demo app.
 # root is where pytest runs (the directory holding pytest.ini); source_dirs and
 # test ids are repo-relative and root-relative respectively. Shopping matches
-# Taha's NovaMart layout; Messaging stays a placeholder until message-platform/ lands.
+# Taha's NovaMart layout; Messaging matches his NovaConnect layout.
 # The verifier runs pytest with the agents interpreter, so each app's test
 # dependencies must be installed there (see agents/requirements.txt).
 #
@@ -16,8 +16,8 @@ pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
 timeout_seconds = 120
 
 [apps.messaging]
-root = "message-platform"
-source_dirs = ["message-platform/src"]
+root = "message-platform/backend"
+source_dirs = ["message-platform/backend/app"]
 test_dir = "tests"
 pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
 timeout_seconds = 120
