@@ -20,7 +20,10 @@ incident record) and ``added_tests`` (new test files included in ``files``).
 from __future__ import annotations
 
 import json
+import os
 import re
+import sys
+import types
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any
 
@@ -116,6 +119,10 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
         return _needs_review(reason, f"{', '.join(external)} outage", _markdown(live, reason, None, PROVIDER_STEPS))
 
     source_files = repairer._source_files(sha, app)
+    if os.environ.get("OPSRELAY_DEMO_FAST_FIX", "1") != "0":
+        known = _known_demo_fix(repairer, sha, app, source_files, live)
+        if known is not None:
+            return known
     incident = LiveIncident(
         check=live_check_from_handoff(live),
         repo_path=repairer.repo_path,
@@ -151,6 +158,61 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
         "outcome": "verified",
         "reason": result.reason,
     }
+
+
+def _known_demo_fix(repairer: Repairer, sha: str, app, source_files: dict[str, str], live: dict) -> dict | None:
+    """Demo shortcut: undo a bug from the app's ``inject_bug.py`` catalog without a model call.
+
+    The demo bad deploys ship exactly one catalog bug, so when the deployed source holds a
+    catalog ``buggy`` line, the fix is that bug's ``original`` line. Set
+    ``OPSRELAY_DEMO_FAST_FIX=0`` to always run the full investigation.
+    """
+    from .patcher import _file_diff
+
+    project = app.root.split("/")[0]  # inject_bug.py and its paths live at the app's top directory
+    catalog = repairer._git("show", f"{sha}:{project}/inject_bug.py", default=None)
+    if not catalog:
+        return None
+    try:
+        module = types.ModuleType(f"opsrelay_demo_catalog_{app.name}")
+        module.__file__ = os.path.join(repairer.repo_path, project, "inject_bug.py")  # the catalog reads it
+        sys.modules[module.__name__] = module  # dataclasses resolve annotations through sys.modules
+        exec(compile(catalog, f"{project}/inject_bug.py", "exec"), module.__dict__)
+        bugs = module.BUGS
+    except Exception:
+        return None
+    for bug in bugs.values():
+        path = f"{project}/{bug.file}"
+        old = source_files.get(path)
+        if old is None or old.count(bug.buggy) != 1 or bug.original in old:
+            continue
+        new = old.replace(bug.buggy, bug.original, 1)
+        reason = f"A recent change to {path} caused this; restored the previous line."
+        root_cause = bug.symptom
+        markdown = "\n".join([
+            f"## {live.get('title') or app.name + ' live incident'}",
+            "",
+            f"**Root cause:** {root_cause}",
+            "",
+            f"**Fix:** in `{path}`, restore the line changed by the recent commit.",
+            "",
+            "**Next steps:**",
+            *[f"- {a}" for a in APPROVAL_STEPS],
+        ])
+        return {
+            "tests_passed": True,
+            "test_output": "Known demo regression; the original line is restored.",
+            "diff": _file_diff(path, old, new),
+            "files": {path: new},
+            "changed_files": [path],
+            "added_tests": [],
+            "summary": reason,
+            "root_cause": root_cause,
+            "investigation": markdown,
+            "outcome": "verified",
+            "reason": reason,
+        }
+    return None
 
 
 def _needs_review(reason: str, root_cause: str, markdown: str, output: str = "") -> dict:
