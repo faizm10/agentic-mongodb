@@ -620,6 +620,32 @@ def create_app(
         storage.request_check(now)
         return ok(incident_out(incident, now))
 
+    @app.post("/api/v1/incidents/{incident_id}/fix-merged", response_model=Envelope[IncidentOut])
+    def mark_fix_merged(incident_id: str):
+        """A person says the fix for this incident is merged into main.
+
+        Like a confirmed fix, the running checkout gets the fix (the bad deploy is restored locally,
+        and reverted on main only if the bug is somehow still there) and a fresh check resolves the
+        incident once the probe passes.
+        """
+        incident = incident_or_404(incident_id)
+        if incident.state != "open":
+            raise HTTPException(409, "This incident is already resolved.")
+        if incident.service_id in bad_deploys.APPS:
+            try:
+                bad_deploys.restore(incident.service_id)
+            except bad_deploys.BadDeployError as exc:
+                raise HTTPException(409, str(exc)) from exc
+            except OSError as exc:
+                logger.error("Cannot apply the merged fix for %s: %s", incident.service_id, exc)
+                raise HTTPException(503, "The merged fix could not be applied to the running app.") from exc
+        now = clock()
+        incident.events.append(IncidentEvent(
+            at=now, type="fix_merged", message="The fix has been merged into main and is being applied to the running app."))
+        storage.save_incident(incident)
+        storage.request_check(now)
+        return ok(incident_out(incident, now))
+
     @app.post("/api/v1/assistant/chat", response_model=Envelope[dict[str, Any]])
     async def assistant_chat(body: assistant.ChatIn):
         try:

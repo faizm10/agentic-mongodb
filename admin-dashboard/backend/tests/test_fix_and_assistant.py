@@ -63,6 +63,13 @@ def test_fix_can_be_confirmed_only_after_the_pr_merges(env):
         "fix_disputed", "fix_confirmed"]
 
 
+def test_fix_can_be_marked_merged_without_waiting_for_the_pr(env):
+    c, iid = env["client"], env["incident_id"]
+    response = c.post(f"/api/v1/incidents/{iid}/fix-merged")
+    assert response.status_code == 200, response.text
+    assert response.json()["data"]["events"][-1]["type"] == "fix_merged"
+
+
 def test_assistant_answers_from_status_without_source_locations(env, monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test")
     monkeypatch.delenv("OPSRELAY_ASSISTANT_MODEL", raising=False)

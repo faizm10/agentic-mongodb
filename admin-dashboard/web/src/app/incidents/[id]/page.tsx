@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { use, useState } from "react";
-import { ArrowLeft, Bot, ChevronDown, ExternalLink, GitPullRequest, Workflow } from "lucide-react";
+import { ArrowLeft, Bot, CheckCircle2, ChevronDown, ExternalLink, GitMerge, GitPullRequest, Workflow } from "lucide-react";
 import { RouteBadge } from "@/components/incidents";
 import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill } from "@/components/ui";
 import { type Incident, isDemoIncident, usePoll } from "@/lib/api";
@@ -47,7 +47,52 @@ const EVENT_LABEL: Record<string, string> = {
   link_added: "Link added",
   fix_confirmed: "Fix confirmed",
   fix_disputed: "Still broken after the fix",
+  fix_merged: "Fix merged into main",
 };
+
+/** Lets a person say the fix is merged into main; the running app gets it and is checked again. */
+function MarkFixMerged({ incident, onChange }: { incident: Incident; onChange: () => void }) {
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const merged = incident.events.some((e) => e.type === "fix_merged");
+
+  async function markMerged() {
+    setPending(true);
+    setError("");
+    try {
+      const response = await fetch(`/api/v1/incidents/${encodeURIComponent(incident.id)}/fix-merged`, { method: "POST" });
+      if (!response.ok) {
+        const body = await response.json().catch(() => null);
+        setError(body?.error?.message ?? "Could not save this. Try again.");
+        return;
+      }
+      onChange();
+    } catch {
+      setError("Could not reach the uptime API.");
+    } finally {
+      setPending(false);
+    }
+  }
+
+  if (merged) {
+    return (
+      <p className="mt-4 flex items-start gap-2 rounded-lg border border-ok/30 bg-ok/10 p-3 text-sm text-ink" role="status">
+        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden="true" />
+        Fixed and merged into main. The status turns green after the next check.
+      </p>
+    );
+  }
+  if (incident.state !== "open") return null;
+  return (
+    <div className="mt-4">
+      <button type="button" disabled={pending} onClick={markMerged}
+        className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-xs font-medium text-ink transition hover:bg-ok/20 disabled:cursor-wait disabled:opacity-50">
+        <GitMerge className="h-3.5 w-3.5" aria-hidden="true" /> {pending ? "Saving…" : "Mark as fixed & merged into main"}
+      </button>
+      {error && <p className="mt-2 text-xs text-crit" role="alert">{error}</p>}
+    </div>
+  );
+}
 
 export default function IncidentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
@@ -168,6 +213,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     ))}
                   </ul>
                 )}
+                <MarkFixMerged incident={i} onChange={inc.reload} />
               </section>
             </div>
           </div>

@@ -45,7 +45,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
 
   async function change(id: ServiceId, scenario?: number) {
     setPending(id);
-    setNotice(scenario ? "Deploying the change…" : "Restoring…");
+    setNotice(scenario ? "Deploying outage…" : "Restoring…");
     try {
       const response = await fetch(`/api/v1/demo/bad-deploys/${id}`, {
         method: scenario ? "POST" : "DELETE",
@@ -53,7 +53,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         body: scenario ? JSON.stringify({ scenario }) : undefined,
       });
       if (!response.ok) {
-        setNotice((await errorMessage(response)) ?? "Could not change the demo outage. Check the uptime API log.");
+        setNotice(scenario ? "Could not deploy the outage." : (await errorMessage(response)) ?? "Could not restore. Check the uptime API log.");
         return;
       }
       if (!scenario) {
@@ -62,7 +62,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
       }
       setNotice(
         scenario
-          ? "Deployed. The next status check will catch the outage, then the AI agent investigates and opens a fix PR."
+          ? "Outage confirmed."
           : "Restored. Waiting for the next status check.",
       );
       onChange();
