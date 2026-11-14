@@ -275,3 +275,6 @@ class SqliteStorage:
 
     def dump_json(self) -> str:  # debugging helper
         return json.dumps({"checks": self.count_checks()})
+
+    def get_learning_summary(self) -> dict[str, Any] | None:
+        return None  # the RL policy's experiences live in MongoDB only

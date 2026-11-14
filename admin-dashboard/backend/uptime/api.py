@@ -120,6 +120,64 @@ class AgentActivity(BaseModel):
     pr_url: str | None = None
 
 
+class LearningStrategy(BaseModel):
+    app: str
+    action: str
+    tries: int
+    successes: float
+    success_rate: float
+    real_tries: int
+
+
+class LearningCurvePoint(BaseModel):
+    epoch: int
+    incidents: str
+    first_try_rate: float
+    avg_attempts: float
+
+
+class LearningTraining(BaseModel):
+    at: datetime
+    embedding_model: str | None = None
+    accuracy_before: float
+    accuracy_after: float
+    per_bug: dict[str, float] = {}
+    eval_incidents: int | None = None
+    curve: list[LearningCurvePoint] = []
+    mock_incidents: int | None = None
+    epochs: int | None = None
+    experiences: int | None = None
+    real_experiences: int | None = None
+
+
+class LearningDecision(BaseModel):
+    incident_id: str
+    app: str | None
+    source: str
+    status: str | None
+    created_at: datetime | None
+    action: str | None
+    expected_success: float | None
+    hinted: bool
+    pr_url: str | None = None
+
+
+class VectorIndex(BaseModel):
+    collection: str
+    name: str | None
+    status: str | None
+    queryable: bool
+
+
+class Learning(BaseModel):
+    available: bool
+    totals: dict[str, int] = {}
+    strategies: list[LearningStrategy] = []
+    training: LearningTraining | None = None
+    decisions: list[LearningDecision] = []
+    vector_indexes: list[VectorIndex] = []
+
+
 class Summary(BaseModel):
     overall: dict[str, Any]
     window: Window
@@ -340,6 +398,16 @@ def create_app(
         return ok(Summary(overall=overall, window=window, services=overviews, active_incidents=active,
                           recent_incidents=recent, monitoring=monitoring(now),
                           agent_activity=[agent_activity(i, now) for i in open_incidents]))
+
+    @app.get("/api/v1/learning", response_model=Envelope[Learning])
+    def learning():
+        """What the RL fix policy has learned, from rl_experiences / rl_training_runs (read-only)."""
+        data = storage.get_learning_summary()
+        if not data:
+            return ok(Learning(available=False))
+        decisions = [{**d, "pr_url": d["pr_url"] if isinstance(d.get("pr_url"), str)
+                      and d["pr_url"].startswith("https://") else None} for d in data["decisions"]]
+        return ok(Learning(available=True, **{**data, "decisions": decisions}))
 
     @app.get("/api/v1/services", response_model=Envelope[list[ServiceOverview]])
     def list_services(window: Window = "24h"):

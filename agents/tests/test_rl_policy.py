@@ -37,6 +37,10 @@ def test_policy_learns_from_rewards(db):
     after = rl.evaluate(db)["accuracy"]
     assert before < 0.35 and after >= 0.8, (before, after)
     assert out["first_try_rate_last_20"] > out["first_try_rate_first_20"]
+    rl.save_training_run({"accuracy": before}, rl.evaluate(db), out, db=db)
+    run = db[rl.TRAINING_RUNS].find_one()
+    assert run["accuracy_after"] >= 0.8 and len(run["curve"]) == 8  # 2 epochs x 4 windows of 25
+    assert run["curve"][0]["first_try_rate"] < run["curve"][-1]["first_try_rate"]
     # successes became memories (flagged mock), every attempt became an experience
     assert m.memories(db).count_documents({"mock": True}) > 50
     assert rl.experiences(db).count_documents({"source": "mock"}) >= 200  # 2 epochs x 100 incidents
@@ -93,4 +97,5 @@ def test_clear_mock_keeps_real_experiences(db):
     rl.clear_mock(db)
     assert rl.mock_incidents(db).count_documents({}) == 0
     assert m.memories(db).count_documents({"mock": True}) == 0
+    assert db[rl.TRAINING_RUNS].count_documents({}) == 0
     assert [d["_id"] for d in rl.experiences(db).find()] == ["exp:real"]

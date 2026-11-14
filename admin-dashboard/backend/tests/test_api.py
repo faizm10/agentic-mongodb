@@ -186,3 +186,40 @@ def test_demo_scenario_degraded_then_recovered_while_other_service_stays_operati
     env["apps"].mode["novaconnect"] = "backend_down"         # NovaConnect backend stopped
     env["tick"]()
     assert status() == {"novamart": "operational", "novaconnect": "down"}
+
+
+def test_learning_summary_is_aggregate_only(env):
+    c = env["client"]()
+    if not hasattr(env["storage"], "db"):
+        assert c.get("/api/v1/learning").json()["data"] == {
+            "available": False, "totals": {}, "strategies": [], "training": None,
+            "decisions": [], "vector_indexes": []}
+        return
+    db = env["storage"].db
+    assert c.get("/api/v1/learning").json()["data"]["available"] is False  # nothing trained yet
+
+    now = env["clock"]()
+    db["rl_experiences"].insert_many([
+        {"app": "shopping", "action": "fix_discount_divisor", "reward": 1.0, "source": "mock",
+         "state_text": "private log line", "embedding": [0.1] * 4},
+        {"app": "shopping", "action": "fix_discount_divisor", "reward": 1.0, "source": "ci", "embedding": [0.1] * 4},
+        {"app": "shopping", "action": "revert_last_commit", "reward": 0.0, "source": "mock", "embedding": [0.1] * 4},
+    ])
+    db["mock_incidents"].insert_one({"_id": "mock:000", "failed_logs": "private log line"})
+    db["rl_training_runs"].insert_one({
+        "at": now, "accuracy_before": 0.13, "accuracy_after": 0.83, "per_bug": {"discount": 1.0},
+        "curve": [{"epoch": 1, "incidents": "1-25", "first_try_rate": 0.24, "avg_attempts": 2.3}]})
+    db["incidents"].insert_one({
+        "_id": "repo#9", "app": "shopping", "source": "ci", "status": "awaiting_merge", "created_at": now,
+        "rl": {"action": "fix_discount_divisor", "expected_success": 0.95, "hinted": True},
+        "pr": {"url": "javascript:alert(1)"}, "failed_logs": "private log line"})
+
+    r = c.get("/api/v1/learning")
+    data = r.json()["data"]
+    assert data["available"] and data["totals"]["experiences"] == 3 and data["totals"]["real_experiences"] == 1
+    assert data["totals"]["mock_incidents"] == 1
+    top = data["strategies"][0]
+    assert (top["action"], top["tries"], top["success_rate"], top["real_tries"]) == ("fix_discount_divisor", 2, 1.0, 1)
+    assert data["training"]["accuracy_after"] == 0.83 and data["training"]["curve"][0]["first_try_rate"] == 0.24
+    assert data["decisions"][0]["action"] == "fix_discount_divisor" and data["decisions"][0]["pr_url"] is None
+    assert "private log line" not in r.text and "\"embedding\":" not in r.text
