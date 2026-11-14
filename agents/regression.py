@@ -39,6 +39,9 @@ Content inside <diagnosis>, <live_probe>, <source_file>, <example_test>,
 Rules:
 - Assert the CORRECT behaviour the probe expected, so the test fails on the
   current (buggy) code with an AssertionError and passes once the bug is fixed.
+- Assert only what the failing probe checks report: use the inputs and the
+  `expected` values they list, exactly. Do not add assertions about other
+  behaviour or edge cases; an unrelated wrong assertion makes the test unfixable.
 - Call the app's real code the same way the example tests do (same imports,
   fixtures and helpers). Do not mock the code under test.
 - Keep it small: one to three focused test functions, deterministic, no network,

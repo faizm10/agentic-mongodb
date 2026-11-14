@@ -1,7 +1,14 @@
 from agents import PriorIncident, investigate, load_app_config
 from agents.investigator import parse_failing_tests, parse_traceback_frames
 
-from .support import CART_PATH, FAILING_TEST, _EvidenceDraft, diagnosis_draft, stub_llm
+from .support import (
+    CART_PATH,
+    FAILING_TEST,
+    StubLLM,
+    _EvidenceDraft,
+    diagnosis_draft,
+    stub_llm,
+)
 
 SHOPPING = load_app_config("shopping")
 
@@ -177,3 +184,56 @@ def test_reproduction_output_counts_as_grounded_evidence(shopping):
 
     assert diagnosis.outcome == "diagnosed", diagnosis.review_reason
     assert diagnosis.evidence[0].source == "reproduction"
+
+
+def test_multi_line_excerpt_may_skip_lines_but_not_reorder_or_invent():
+    from agents.investigator import _grounded
+
+    source = 'def f(x):\n    """Doc."""\n    if x:\n        return 1\n    return 0\n'
+    assert _grounded("def f(x):\n    if x:\n        return 1", source)          # skipped the docstring
+    assert _grounded("   3|     if x:\n   4|         return 1", source)         # display prefixes copied
+    assert not _grounded("    if x:\ndef f(x):", source)                         # wrong order
+    assert not _grounded("def f(x):\n    return 2", source)                      # invented line
+    assert not _grounded("return 2", source)
+
+
+def test_one_misquoted_excerpt_is_dropped_without_rejecting_a_grounded_diagnosis(shopping):
+    good = diagnosis_draft().evidence
+    draft = diagnosis_draft(evidence=[*good, _EvidenceDraft(
+        source="ci_log", reference="ci_log", excerpt="expected: 180, actual: 190", supports="paraphrased")])
+
+    diagnosis = investigate(shopping.request(), stub_llm(diagnosis=draft), SHOPPING)
+
+    assert diagnosis.outcome == "diagnosed", diagnosis.review_reason
+    assert len(diagnosis.evidence) == len(good)
+
+
+def test_suspect_paths_from_probe_hints_resolve_to_repo_paths(shopping):
+    draft = diagnosis_draft(suspect_files=["src/shopping/cart.py::Cart.total", "shopping/cart.py"])
+
+    diagnosis = investigate(shopping.request(), stub_llm(diagnosis=draft), SHOPPING)
+
+    assert diagnosis.outcome == "diagnosed", diagnosis.review_reason
+    assert diagnosis.suspect_files == ["shopping/src/shopping/cart.py"]
+
+
+def test_misquoted_evidence_gets_one_retry_with_the_failed_quotes(shopping):
+    bad = diagnosis_draft(evidence=[
+        _EvidenceDraft(source="ci_log", reference="ci_log", excerpt="expected 180 got 190", supports="paraphrase")])
+    llm = StubLLM({"_DiagnosisDraft": [bad, diagnosis_draft()]})
+
+    diagnosis = investigate(shopping.request(), llm, SHOPPING)
+
+    assert diagnosis.outcome == "diagnosed", diagnosis.review_reason
+    assert llm.count("_DiagnosisDraft") == 2
+    assert "'expected 180 got 190'" in llm.calls[1][2] and "<previous_attempt>" in llm.calls[1][2]
+
+
+def test_live_diagnosis_without_named_suspects_falls_back_to_probe_source_hints(shopping):
+    draft = diagnosis_draft(suspect_files=[])
+    request = shopping.request(probe_details="- check: discounts\n  source: src/shopping/cart.py::Cart.total\n")
+
+    diagnosis = investigate(request, stub_llm(diagnosis=draft), SHOPPING)
+
+    assert diagnosis.outcome == "diagnosed", diagnosis.review_reason
+    assert diagnosis.suspect_files == ["shopping/src/shopping/cart.py"]

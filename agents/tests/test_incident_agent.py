@@ -110,7 +110,7 @@ def agent_llm():
                     "The latest commit changed the divisor in compute_discount.",
         evidence=[
             _EvidenceDraft(source="live_probe", reference="live_probe",
-                           excerpt='"source": "backend/app/pricing.py::compute_discount"',
+                           excerpt='source: backend/app/pricing.py::compute_discount',
                            supports="The failing probe check names compute_discount."),
             _EvidenceDraft(source="source_file", reference=PRICING,
                            excerpt="discount = subtotal_cents * promotion.value // 10",

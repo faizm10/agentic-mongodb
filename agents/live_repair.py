@@ -44,6 +44,14 @@ SERVICE_HEALTH_STEPS = [
 ]
 
 
+# Recovery for an uptime incident is the monitor's next passing check, not the agent's word.
+APPROVAL_STEPS = [
+    "Review the diff (and any new test) and the evidence above.",
+    "If it is right, mark this draft ready and merge it; the agent never merges.",
+    "Deploy it. The uptime monitor resolves the incident when its next functional probe passes.",
+]
+
+
 def live_check_from_handoff(live: dict[str, Any]) -> LiveCheckResult:
     """Taha's ``live_check`` block as a ``LiveCheckResult`` (his functional probes are synthetic)."""
     check = live.get("live_check") or {}
@@ -63,6 +71,19 @@ def live_check_from_handoff(live: dict[str, Any]) -> LiveCheckResult:
         error=check.get("error"),
         http_status=check.get("http_status"),
     )
+
+
+def probe_text(failures: list[dict]) -> str:
+    """Failing probe checks, one field per line, so the model can quote them verbatim."""
+    lines = []
+    for f in failures:
+        lines.append(f"- check: {f.get('check') or f.get('name')} (component: {f.get('component') or 'n/a'})")
+        for key in ("source", "reason", "expected", "actual"):
+            value = f.get(key)
+            if value not in (None, ""):
+                text = value if isinstance(value, str) else json.dumps(value, default=str)
+                lines.append(f"  {key}: {text}")
+    return "\n".join(lines)
 
 
 def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dict]) -> dict:
@@ -90,13 +111,15 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
         source_files=source_files,
         similar_incidents=[_prior(s, i) for i, s in enumerate(similar)],
         ci_status=live.get("ci_status") or "unknown",
-        probe_details=json.dumps(live.get("probe_failures") or [], indent=1, default=str),
+        probe_details=probe_text(live.get("probe_failures") or []),
         test_examples=_test_examples(repairer, sha, app, live),
         service_logs=live.get("service_logs") or "",
     )
     result = diagnose_live_failure(incident, repairer.llm)
     repair: RepairResult | None = result.repair
-    markdown = _markdown(live, result.reason, result, result.recommended_actions)
+    actions = (APPROVAL_STEPS if result.outcome == "verified" else
+               [a for a in [result.next_diagnostic, *result.recommended_actions] if a])
+    markdown = _markdown(live, result.reason, result, actions)
     if result.outcome != "verified" or repair is None or repair.outcome != "verified":
         next_step = f" Next: {result.next_diagnostic}" if result.next_diagnostic else ""
         return _needs_review(result.reason + next_step, result.likely_cause, markdown,

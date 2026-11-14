@@ -38,7 +38,9 @@ OUTPUT_TAIL_CHARS = 4_000
 _SHA_RE = re.compile(r"^[0-9a-fA-F]{7,40}$")
 _ADDED_TEST_NAME_RE = re.compile(r"^test_opsrelay_[a-z0-9_]{1,48}\.py$")
 MAX_ADDED_TEST_CHARS = 16_000
-_NODE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*\.py(::[A-Za-z0-9_\[\]\-.]+)*$")
+# Parametrize ids may hold most characters ("[WELCOME10@20000-2000]"); ids are passed as argv
+# after "--", never through a shell, so only whitespace and nested brackets are refused there.
+_NODE_ID_RE = re.compile(r"^[A-Za-z0-9_][A-Za-z0-9_./-]*\.py(::[A-Za-z0-9_.]+(\[[^\[\]\s]*\])?)*$")
 
 _GIT_ENV = {
     "PATH": os.environ.get("PATH", os.defpath),
