@@ -1,0 +1,62 @@
+# OpsRelay
+
+OpsRelay is a demo incident detection and repair system built around two applications: **NovaMart**, a shopping storefront, and **NovaConnect**, a messaging app. GitHub Actions runs their checks. The Python agents can inspect failed runs, reproduce failures, propose and verify fixes, and open a pull request for human review. A separate uptime monitor checks both running apps and displays service status and incidents.
+
+## Repository map
+
+| Directory | What it contains | Local URL |
+| --- | --- | --- |
+| [`shopping/`](shopping/README.md) | NovaMart: Next.js storefront, FastAPI API, checkout probe, and test suite | App: http://localhost:3100 · API: http://localhost:8100 |
+| [`message-platform/`](message-platform/README.md) | NovaConnect: Next.js client, FastAPI and WebSocket API, SQLite storage, and functional probe | App: http://localhost:3200 · API: http://localhost:8200 |
+| [`admin-dashboard/`](admin-dashboard/README.md) | Uptime worker, status API, and Next.js dashboard | Dashboard: http://localhost:3300 · API: http://localhost:8300 |
+| [`agents/`](agents/README.md) | CI failure monitor, diagnosis and repair pipeline, MongoDB workflow state, and GitHub PR publisher | CLI and worker |
+| [`.github/workflows/`](.github/workflows/) | Active GitHub Actions workflows for the two demo apps | GitHub Actions |
+
+The apps run independently. NovaMart stores demo orders in a local JSON file; NovaConnect stores demo messages in SQLite. The uptime service uses local SQLite by default and can use MongoDB when configured. The agents use MongoDB for incident state and repair memory.
+
+## Run the demo locally
+
+Use **Python 3.12**, **Node.js 20**, npm, and Make. From the repository root, install each component:
+
+```bash
+cd shopping && make install && cd ..
+cd message-platform && make install && cd ..
+cd admin-dashboard && make install && cd ..
+```
+
+Start these commands in separate terminals, each from the repository root:
+
+```bash
+cd shopping && make dev
+cd message-platform && make backend
+cd message-platform && make frontend
+cd admin-dashboard && make serve
+cd admin-dashboard && make dashboard-dev
+```
+
+Open the [NovaMart storefront](http://localhost:3100), [NovaConnect](http://localhost:3200), or the [status dashboard](http://localhost:3300). The dashboard begins recording checks when its worker starts. For app-specific settings, probes, and demo scenarios, see the READMEs linked in the table above.
+
+## Run the CI repair agent
+
+The agent worker needs a MongoDB connection, a GitHub token with access to this repository, and an OpenAI API key. Copy [`.env.example`](.env.example) to `.env` at the repository root and fill in `MONGODB_URI`, `GITHUB_TOKEN`, and `GITHUB_OWNER`. Set `OPENAI_API_KEY` in your environment or add it to the untracked `.env` file. `VOYAGE_API_KEY` is optional; without it, repair memory uses a local embedding fallback.
+
+```bash
+python3.12 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python -m agents.orchestrator setup
+.venv/bin/python -m agents.orchestrator worker
+```
+
+The worker polls failed GitHub Actions runs on the configured base branch, saves and resumes incidents in MongoDB, verifies candidate patches with the app tests, and publishes a PR when a repair passes. It leaves the merge to a reviewer. See [the agent guide](agents/README.md) for the repair process, one-shot live checks, and incident commands.
+
+## Checks
+
+Run these from the repository root after installing the relevant component:
+
+```bash
+cd shopping && make test && make typecheck
+cd message-platform && make test && make typecheck
+cd admin-dashboard && make test && make typecheck
+```
+
+For the agent tests, run `.venv/bin/python -m pytest agents/tests -q` from the root. The app workflows are in [`.github/workflows/`](.github/workflows/) and run when their app files change. This README-only change does not trigger them.
