@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the three demo platforms (six servers) from one terminal.
+# Start the three demo platforms (six servers) and the AI agent worker from one terminal.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -17,12 +17,13 @@ usage() {
   cat <<'EOF'
 Usage: ./dev.sh [up|setup|logs|help]
 
-  setup  Install the Python and Node dependencies for all three platforms.
-  up     Start all six servers (default). Press Ctrl+C to stop them all.
-  logs   Follow the server logs in .dev/logs/.
+  setup  Install the Python and Node dependencies for all three platforms and the agent.
+  up     Start all six servers and the AI agent worker (default). Press Ctrl+C to stop them all.
+  logs   Follow the server and agent logs in .dev/logs/.
 
 Set PYTHON=python3.12 to choose a Python interpreter during setup.
 Set DEV_PORT_OFFSET=100 to shift every port when the defaults are occupied.
+Set DEV_AGENT=0 to start the servers without the AI agent worker.
 EOF
 }
 
@@ -51,7 +52,7 @@ check_versions() {
 
 setup() {
   check_versions
-  local platform frontend
+  local platform frontend ca_file
   for platform in shopping message-platform admin-dashboard; do
     if [[ "$platform" == "admin-dashboard" ]]; then frontend=web; else frontend=frontend; fi
     echo "Installing $platform backend..."
@@ -60,7 +61,38 @@ setup() {
     echo "Installing $platform frontend..."
     (cd "$ROOT/$platform/$frontend" && npm ci)
   done
-  echo "Setup complete. Run ./dev.sh to start all six servers."
+  echo "Installing the AI agent..."
+  "$PYTHON" -m venv "$ROOT/agents/.venv"
+  "$ROOT/agents/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
+  if has_mongodb_uri; then
+    ca_file="$(agent_ca_file)"
+    (cd "$ROOT" && env ${ca_file:+SSL_CERT_FILE="$ca_file"} "$ROOT/agents/.venv/bin/python" -m agents.orchestrator setup)
+  else
+    echo "Add MONGODB_URI to .env, then run ./dev.sh setup again to prepare the agent's MongoDB collections."
+  fi
+  echo "Setup complete. Run ./dev.sh to start all six servers and the AI agent."
+}
+
+# Print the CA bundle for the agent's Python. python.org builds on macOS ship without
+# CA certificates, so TLS to Atlas fails; use certifi's bundle (installed with
+# requests) unless SSL_CERT_FILE is already set.
+agent_ca_file() {
+  echo "${SSL_CERT_FILE:-$("$ROOT/agents/.venv/bin/python" -c 'import certifi; print(certifi.where())' 2>/dev/null || true)}"
+}
+
+has_mongodb_uri() {
+  [[ -f "$ROOT/.env" ]] && grep -qE '^[[:space:]]*MONGODB_URI[[:space:]]*=[[:space:]]*[^[:space:]]' "$ROOT/.env"
+}
+
+# Print why the agent worker cannot start, or nothing when it can.
+agent_skip_reason() {
+  if [[ "${DEV_AGENT:-1}" == "0" ]]; then
+    echo "DEV_AGENT=0"
+  elif [[ ! -x "$ROOT/agents/.venv/bin/python" ]]; then
+    echo "agent environment missing; run ./dev.sh setup"
+  elif ! has_mongodb_uri; then
+    echo "MONGODB_URI is not set in .env"
+  fi
 }
 
 check_dependencies() {
@@ -122,7 +154,7 @@ stop_tree() {
 cleanup() {
   trap - EXIT INT TERM
   if ((${#PIDS[@]})); then
-    echo "Stopping all six servers..."
+    echo "Stopping all servers..."
     local pid
     for pid in "${PIDS[@]}"; do stop_tree "$pid"; done
     for pid in "${PIDS[@]}"; do wait "$pid" 2>/dev/null || true; done
@@ -182,6 +214,20 @@ up() {
   wait_ready opsrelay-web "http://127.0.0.1:$relay_web" "${PIDS[5]}"
 
   echo "All six servers are running: NovaMart http://localhost:$mart_web, NovaConnect http://localhost:$connect_web, OpsRelay http://localhost:$relay_web"
+
+  # The agent watches the apps and the uptime incidents in MongoDB, then works on
+  # outages. It is optional: the demo servers keep running if it stops.
+  local agent=-1 skip ca_file
+  skip="$(agent_skip_reason)"
+  if [[ -z "$skip" ]]; then
+    ca_file="$(agent_ca_file)"
+    start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
+    agent=$((${#PIDS[@]} - 1))
+    echo "AI agent worker started. Log: $LOG_DIR/agent-worker.log"
+  else
+    echo "AI agent worker not started ($skip)."
+  fi
+
   echo "Logs: $LOG_DIR"
   echo "Press Ctrl+C to stop them. In another terminal, run ./dev.sh logs to follow output."
   local i code
@@ -192,6 +238,14 @@ up() {
         wait "${PIDS[i]}" || code=$?
         echo "${NAMES[i]} exited (status $code). Recent log output:" >&2
         tail -n 20 "$LOG_DIR/${NAMES[i]}.log" >&2
+        if ((i == agent)); then
+          echo "The demo servers are still running without the AI agent. Restart ./dev.sh to try again." >&2
+          unset 'PIDS[i]' 'NAMES[i]'
+          PIDS=("${PIDS[@]}")
+          NAMES=("${NAMES[@]}")
+          agent=-1
+          break
+        fi
         exit 1
       fi
     done
