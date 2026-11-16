@@ -14,8 +14,12 @@ from pathlib import Path
 
 SCENARIOS = {
     "novamart": frozenset({"payment", "images", "inventory"}),
-    "novaconnect": frozenset({"send", "receive", "both"}),
+    "novaconnect": frozenset({"send", "receive", "both", "confirmation_timeout"}),
 }
+# Controlled timeout for order confirmations (message-platform/backend/app/demo_outage.py):
+# alternate a dropped request and a recorded one whose response arrives too late, both
+# slower than NovaMart's 2 s confirmation timeout. Health checks and homepages stay up.
+OPTIONS = {"confirmation_timeout": {"mode": "mixed", "delay_seconds": 3}}
 FILENAME = "opsrelay-outage.json"
 
 
@@ -40,7 +44,7 @@ def activate(service_id: str, scenario: str) -> None:
     fd, temp = tempfile.mkstemp(prefix=".opsrelay-outage-", dir=path.parent)
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as handle:
-            json.dump({"scenario": scenario}, handle)
+            json.dump({"scenario": scenario, **OPTIONS.get(scenario, {})}, handle)
         os.replace(temp, path)
     finally:
         if os.path.exists(temp):
