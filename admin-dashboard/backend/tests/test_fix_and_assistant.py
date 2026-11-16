@@ -27,7 +27,7 @@ def env(tmp_path, settings, clock, apps, monkeypatch):
         requests.append(request)
         return httpx.Response(200, json={"choices": [{"message": {"content": "NovaMart is overcharging. "}}]})
 
-    client = signed_in(create_app(storage, settings, clock=clock, assistant_transport=httpx.MockTransport(openai), demo_controls=True))
+    client = signed_in(create_app(storage, settings, clock=clock, assistant_transport=httpx.MockTransport(openai)))
     incident_id = storage.list_incidents(state="open")[0].id
     storage.db["incidents"].insert_one({
         "_id": f"repo#{incident_id}", "source": "live", "live": {"uptime_incident_id": incident_id},
@@ -60,13 +60,6 @@ def test_fix_can_be_confirmed_only_after_the_pr_merges(env):
     assert activity(c)["fix_confirmation"] == "confirmed"
     assert [e["type"] for e in c.get(f"/api/v1/incidents/{iid}").json()["data"]["events"]][-2:] == [
         "fix_disputed", "fix_confirmed"]
-
-
-def test_fix_can_be_marked_merged_without_waiting_for_the_pr(env):
-    c, iid = env["client"], env["incident_id"]
-    response = c.post(f"/api/v1/incidents/{iid}/fix-merged")
-    assert response.status_code == 200, response.text
-    assert response.json()["data"]["events"][-1]["type"] == "fix_merged"
 
 
 def test_assistant_answers_from_status_without_source_locations(env, monkeypatch):

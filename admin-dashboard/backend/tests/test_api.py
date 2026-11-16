@@ -379,3 +379,31 @@ def test_repo_agent_is_off_by_default_and_only_enables_for_the_workers_repo(tmp_
     other = signed_in(create_app(storage, settings, clock=clock), "other@example.com")
     other.post("/api/v1/workspaces", json={"name": "Other"})
     assert other.put("/api/v1/repositories/shop/agent", json={"enabled": False}).status_code == 404
+
+
+def test_sites_belong_to_one_workspace_and_scheduled_checks_need_the_secret(env, settings, clock, apps, monkeypatch):
+    app = create_app(env["storage"], settings, clock=clock, monitor_kwargs={"transport": apps.transport()})
+    owner, other = signed_in(app), signed_in(app, "other@example.com")
+    other.post("/api/v1/workspaces", json={"name": "Other team"}).raise_for_status()
+
+    added = other.post("/api/v1/sites", json={"name": "Shop", "url": "http://shop-web.test"})
+    assert added.status_code == 200, added.text
+    site_id = added.json()["data"]["id"]
+    service = other.get("/api/v1/summary").json()["data"]["services"][-1]
+    assert service["id"] == site_id and service["current"]["status"] == "operational"  # checked on add
+    assert other.post("/api/v1/sites", json={"name": "x", "url": "ftp://shop"}).status_code == 422
+    assert site_id not in {s["id"] for s in owner.get("/api/v1/sites").json()["data"]}
+    assert owner.delete(f"/api/v1/sites/{site_id}").status_code == 404
+
+    cron = TestClient(app)
+    monkeypatch.delenv("OPSRELAY_CRON_SECRET", raising=False)
+    assert cron.post("/api/v1/cron/check", headers={"Authorization": "Bearer "}).status_code == 401
+    monkeypatch.setenv("OPSRELAY_CRON_SECRET", "s3cret")
+    assert cron.post("/api/v1/cron/check", headers={"Authorization": "Bearer nope"}).status_code == 401
+    assert cron.post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"}).status_code == 409  # worker's lease
+    clock.advance(71)
+    ran = cron.post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"})
+    assert ran.status_code == 200 and ran.json()["data"]["checked"] == len(SERVICES) + 1
+
+    assert other.delete(f"/api/v1/sites/{site_id}").status_code == 200
+    assert other.get("/api/v1/sites").json()["data"] == []

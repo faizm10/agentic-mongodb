@@ -8,7 +8,9 @@ Every response is ``{"data": ..., "meta": {"generated_at", "storage"}}``; every 
 from __future__ import annotations
 
 import asyncio
+import hmac
 import logging
+import secrets
 import os
 import time
 from contextlib import asynccontextmanager
@@ -22,7 +24,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, repositories, bad_deploys, demo_outages, demo_traffic, walkthrough
+from . import __version__, accounts, alerts, assistant, repositories, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -234,6 +236,12 @@ class WorkspaceIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class SiteIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+    url: str = Field(pattern=r"^https?://\S+$", max_length=500)
+    health_url: str | None = Field(default=None, pattern=r"^https?://\S+$", max_length=500)
+
+
 class GitHubConnectIn(BaseModel):
     token: str = Field(min_length=20, max_length=255)
 
@@ -250,20 +258,8 @@ class RepositoryIn(BaseModel):
     workflow: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]+\.ya?ml$", max_length=200)
 
 
-class DemoOutageIn(BaseModel):
-    scenario: Literal["payment", "images", "inventory", "send", "receive", "both", "confirmation_timeout"]
-
-
-class BadDeployIn(BaseModel):
-    scenario: int = Field(ge=1, le=4)
-
-
 class FixConfirmationIn(BaseModel):
     resolved: bool
-
-
-class DemoCheckoutsIn(BaseModel):
-    count: int = Field(default=4, ge=1, le=10)
 
 
 # -------------------------------------------------------------------- the app
@@ -276,25 +272,21 @@ def create_app(
     monitor_kwargs: dict[str, Any] | None = None,
     assistant_transport: Any = None,
     github_transport: Any = None,
-    demo_controls: bool | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
-    # Demo mutations push bugs to main and rewrite incident state: off unless explicitly a dev or demo deployment.
-    if demo_controls is None:
-        demo_controls = os.environ.get("OPSRELAY_ENV") in ("development", "demo")
     storage = storage or open_storage(retention_days=settings.retention_days,
                                       incident_retention_days=settings.incident_retention_days)
-    for service in settings.services:  # make configuration visible even before the worker runs
-        storage.upsert_service(service)
     stop = asyncio.Event()
+    # Without the embedded loop, cycles run on request: "check now", a new site, or the scheduled /cron/check call.
+    # Every serverless instance then shares one worker id, so any of them can renew the lease.
     monitor = UptimeMonitor(storage, settings.services, interval_seconds=settings.interval_seconds,
                             lease_ttl_seconds=settings.lease_ttl, retention_days=settings.retention_days,
                             incident_retention_days=settings.incident_retention_days, clock=clock,
-                            **(monitor_kwargs or {})) if embed_worker else None
+                            **{"worker_id": None if embed_worker else "api", **(monitor_kwargs or {})})
 
     @asynccontextmanager
     async def lifespan(_: FastAPI):
-        task = asyncio.create_task(monitor.run_forever(stop)) if monitor else None
+        task = asyncio.create_task(monitor.run_forever(stop)) if embed_worker else None
         yield
         stop.set()
         if task:
@@ -319,10 +311,6 @@ def create_app(
 
     def ok(data: Any) -> dict[str, Any]:
         return {"data": data, "meta": meta()}
-
-    def require_demo() -> None:
-        if not demo_controls:
-            raise HTTPException(404, "Demo controls are off. They run only with OPSRELAY_ENV=development or demo.")
 
     def signed_in(request: Request) -> dict[str, Any]:
         user = accounts.session_user(storage, request.cookies.get(SESSION_COOKIE), clock())
@@ -357,8 +345,7 @@ def create_app(
         return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_FAILED", "message": message}})
 
     def services(ws: str) -> list[ServiceConfig]:
-        stored = {s.id: s for s in storage.list_services()}
-        return [s for s in (stored.get(s.id, s) for s in settings.services) if s.workspace_id == ws]
+        return [s for s in storage.list_services() if s.workspace_id == ws]
 
     def service_or_404(service_id: str, ws: str) -> ServiceConfig:
         for s in services(ws):
@@ -371,8 +358,8 @@ def create_app(
         return [s.id for s in services(ws)] + [m["id"] for m in storage.find_docs("repos", "workspace_id", ws)]
 
     def service_name(service_id: str) -> str:
-        if configured := next((s for s in settings.services if s.id == service_id), None):
-            return configured.name
+        if site := storage.get_service(service_id):
+            return site.name
         mapping = storage.get_doc("repos", service_id) if ":" in service_id else None
         return mapping["service_name"] if mapping else service_id
 
@@ -502,7 +489,7 @@ def create_app(
         if last is None:
             status, message = "not_started", "The monitoring worker has not completed a cycle yet."
         elif now - last > timedelta(seconds=settings.stale_after_intervals * interval):
-            status, message = "stale", f"No cycle for {int((now - last).total_seconds())}s; start the worker (python -m uptime worker)."
+            status, message = "stale", f"No cycle for {int((now - last).total_seconds())}s; check the scheduled GitHub Actions run (uptime-checks) or start python -m uptime worker."
         else:
             status, message = "running", f"Checking {len(services(ws))} services every {interval}s."
         return MonitoringHealth(status=status, message=message, interval_seconds=interval, worker=worker,
@@ -766,72 +753,37 @@ def create_app(
         return ok(build_handoff(incident, service, clock()))
 
     # ---------------------------------------------------------- mutations
-    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def start_demo_outage(service_id: str, body: DemoOutageIn, ws: str = Depends(workspace)):
-        if service_id not in demo_outages.SCENARIOS:
-            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id, ws)
-        try:
-            demo_outages.activate(service_id, body.scenario)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        except OSError as exc:
-            logger.error("Cannot start demo outage for %s: %s", service_id, exc)
-            raise HTTPException(503, "The local demo app is unavailable in this checkout.") from exc
-        storage.request_check(clock())
-        return ok({"service_id": service_id, "requested": True})
+    @app.get("/api/v1/sites", response_model=Envelope[list[dict[str, Any]]])
+    def list_sites(ws: str = Depends(workspace)):
+        return ok([{"id": s.id, "name": s.name, "url": s.frontend_url, "health_url": s.availability_url} for s in services(ws)])
 
-    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def stop_demo_outage(service_id: str, ws: str = Depends(workspace)):
-        if service_id not in demo_outages.SCENARIOS:
-            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id, ws)
-        try:
-            demo_outages.clear(service_id)
-        except OSError as exc:
-            logger.error("Cannot clear demo outage for %s: %s", service_id, exc)
-            raise HTTPException(503, "The local demo outage could not be cleared.") from exc
-        storage.request_check(clock())
-        return ok({"service_id": service_id, "requested": True})
+    @app.post("/api/v1/sites", response_model=Envelope[dict[str, Any]])
+    async def add_site(body: SiteIn, ws: str = Depends(workspace)):
+        site = ServiceConfig(id=f"site-{secrets.token_hex(5)}", name=body.name.strip(), frontend_url=body.url,
+                             backend_url=body.health_url or "", interval_seconds=settings.interval_seconds, workspace_id=ws)
+        storage.upsert_service(site)
+        await monitor.run_cycle(scheduled=False, workspace_id=ws)  # a status now, not at the next scheduled check
+        return ok({"id": site.id})
 
-    # Bad deploys push a real bug to the base branch on GitHub. Responses never name the
-    # bug: the repair agent must find it from the evidence.
-    @app.post("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def ship_bad_deploy(service_id: str, body: BadDeployIn, ws: str = Depends(workspace)):
-        if service_id not in bad_deploys.APPS:
-            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
+    @app.delete("/api/v1/sites/{service_id}", response_model=Envelope[dict[str, Any]])
+    def remove_site(service_id: str, ws: str = Depends(workspace)):
         service_or_404(service_id, ws)
-        try:
-            bad_deploys.ship(service_id, body.scenario)
-        except ValueError as exc:
-            raise HTTPException(422, str(exc)) from exc
-        except bad_deploys.BadDeployError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except OSError as exc:
-            logger.error("Cannot ship bad deploy for %s: %s", service_id, exc)
-            raise HTTPException(503, "The local demo app is unavailable in this checkout.") from exc
-        storage.request_check(clock())
-        return ok({"service_id": service_id, "requested": True, "branch": bad_deploys.branch()})
+        storage.delete_service(service_id)
+        return ok({"id": service_id, "removed": True})
 
-    @app.delete("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def restore_bad_deploy(service_id: str, ws: str = Depends(workspace)):
-        if service_id not in bad_deploys.APPS:
-            raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id, ws)
-        try:
-            bad_deploys.restore(service_id)
-        except bad_deploys.BadDeployError as exc:
-            raise HTTPException(409, str(exc)) from exc
-        except OSError as exc:
-            logger.error("Cannot restore bad deploy for %s: %s", service_id, exc)
-            raise HTTPException(503, "The bad deploy could not be restored.") from exc
-        storage.request_check(clock())
-        return ok({"service_id": service_id, "requested": True})
-
-    @app.post("/api/v1/demo/checkouts", response_model=Envelope[list[dict[str, Any]]], dependencies=[Depends(require_demo)])
-    async def demo_checkouts(body: DemoCheckoutsIn, ws: str = Depends(workspace)):
-        """Place customer checkouts on NovaMart (each retried once with the same checkout ID on failure)."""
-        return ok(await demo_traffic.place_checkouts(service_or_404("novamart", ws), body.count))
+    @app.post("/api/v1/cron/check", response_model=Envelope[dict[str, Any]])
+    async def scheduled_check(request: Request):
+        """One check cycle for every workspace, for a scheduler (GitHub Actions) where no worker runs."""
+        secret = os.environ.get("OPSRELAY_CRON_SECRET", "")
+        given = request.headers.get("authorization", "").removeprefix("Bearer ")
+        if not secret or not hmac.compare_digest(given.encode(), secret.encode()):
+            raise HTTPException(401, "Missing or wrong cron secret.")
+        if not storage.acquire_lease(monitor.worker_id, clock(), monitor.lease_ttl):
+            raise HTTPException(409, "Another monitoring worker holds the lease.")
+        result = await monitor.run_cycle()
+        if result is None:
+            raise HTTPException(409, "A monitoring cycle is already running.")
+        return ok({"checked": len(result["statuses"]), "recorded": len(result["recorded"]), "duplicates": result["duplicates"]})
 
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
     def patch_service(service_id: str, body: ServicePatch, ws: str = Depends(workspace)):
@@ -841,15 +793,10 @@ def create_app(
 
     @app.post("/api/v1/monitor/check-now", response_model=Envelope[dict[str, Any]])
     async def check_now(ws: str = Depends(workspace)):
-        if monitor is not None:
-            result = await monitor.run_cycle(scheduled=False)
-            if result is None:
-                raise HTTPException(409, "A monitoring cycle is already running.")
-            mine = {s.id for s in services(ws)}
-            return ok({"ran": True, "statuses": {k: v for k, v in result["statuses"].items() if k in mine},
-                       "recorded": result["recorded"]})
-        storage.request_check(clock())
-        return ok({"ran": False, "requested": True, "message": "The worker will run a check within ~1s."})
+        result = await monitor.run_cycle(scheduled=False, workspace_id=ws)
+        if result is None:
+            raise HTTPException(409, "A monitoring cycle is already running.")
+        return ok({"ran": True, "statuses": result["statuses"], "recorded": result["recorded"]})
 
     @app.post("/api/v1/incidents/{incident_id}/acknowledge", response_model=Envelope[IncidentOut])
     def acknowledge(incident_id: str, body: AckIn, ws: str = Depends(workspace)):
@@ -864,53 +811,18 @@ def create_app(
     def confirm_fix(incident_id: str, body: FixConfirmationIn, ws: str = Depends(workspace)):
         """A person says whether the agent's merged PR fixed the problem.
 
-        Yes applies the fix to the running checkout (the bad deploy is restored locally; main
-        already has the fix, so nothing is pushed) and asks for a fresh check, which resolves the
-        incident once the probe passes. No records it and leaves the incident open.
+        Yes asks for a fresh check, which resolves the incident once the site passes. No records it
+        and leaves the incident open.
         """
         incident = incident_or_404(incident_id, ws)
         findings = storage.get_agent_findings(incident_id)
         if not findings or findings.get("status") != "resolved":
             raise HTTPException(409, "The repair PR for this incident has not been merged yet.")
-        if body.resolved and incident.service_id in bad_deploys.APPS:
-            try:
-                bad_deploys.restore(incident.service_id, keep_faults=True)
-            except bad_deploys.BadDeployError as exc:
-                raise HTTPException(409, str(exc)) from exc
-            except OSError as exc:
-                logger.error("Cannot apply the merged fix for %s: %s", incident.service_id, exc)
-                raise HTTPException(503, "The merged fix could not be applied to the running app.") from exc
         now = clock()
         incident.events.append(IncidentEvent(
             at=now, type="fix_confirmed" if body.resolved else "fix_disputed",
-            message="A person confirmed the merged fix resolved the problem; applying it to the running app."
+            message="A person confirmed the merged fix resolved the problem."
             if body.resolved else "A person reported the problem is still happening after the fix was merged."))
-        storage.save_incident(incident)
-        storage.request_check(now)
-        return ok(incident_out(incident, now))
-
-    @app.post("/api/v1/incidents/{incident_id}/fix-merged", response_model=Envelope[IncidentOut], dependencies=[Depends(require_demo)])
-    def mark_fix_merged(incident_id: str, ws: str = Depends(workspace)):
-        """A person says the fix for this incident is merged into main.
-
-        Like a confirmed fix, the running checkout gets the fix (the bad deploy is restored locally,
-        and reverted on main only if the bug is somehow still there) and a fresh check resolves the
-        incident once the probe passes.
-        """
-        incident = incident_or_404(incident_id, ws)
-        if incident.state != "open":
-            raise HTTPException(409, "This incident is already resolved.")
-        if incident.service_id in bad_deploys.APPS:
-            try:
-                bad_deploys.restore(incident.service_id, keep_faults=True)
-            except bad_deploys.BadDeployError as exc:
-                raise HTTPException(409, str(exc)) from exc
-            except OSError as exc:
-                logger.error("Cannot apply the merged fix for %s: %s", incident.service_id, exc)
-                raise HTTPException(503, "The merged fix could not be applied to the running app.") from exc
-        now = clock()
-        incident.events.append(IncidentEvent(
-            at=now, type="fix_merged", message="The fix has been merged into main and is being applied to the running app."))
         storage.save_incident(incident)
         storage.request_check(now)
         return ok(incident_out(incident, now))
