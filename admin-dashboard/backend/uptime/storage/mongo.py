@@ -446,5 +446,8 @@ class MongoStorage:
         return [{k: v for k, v in d.items() if k != "_id"}
                 for d in self.db[ACCOUNTS + kind].find({field: value}).sort("_id", ASCENDING)]
 
+    def all_docs(self, kind: str) -> list[dict[str, Any]]:
+        return [{k: v for k, v in d.items() if k != "_id"} for d in self.db[ACCOUNTS + kind].find().sort("_id", ASCENDING)]
+
     def delete_doc(self, kind: str, doc_id: str) -> None:
         self.db[ACCOUNTS + kind].delete_one({"_id": doc_id})

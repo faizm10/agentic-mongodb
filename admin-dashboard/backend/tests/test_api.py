@@ -432,3 +432,43 @@ def test_repeated_sign_in_attempts_are_rate_limited(env, settings, clock):
     assert all(client.post("/api/v1/auth/sign-in", json=creds).status_code == 401 for _ in range(10))
     blocked = client.post("/api/v1/auth/sign-in", json=creds)
     assert blocked.status_code == 429 and int(blocked.headers["retry-after"]) > 0
+
+
+def test_dependabot_alerts_become_one_incident_per_repository(tmp_path, settings, clock, monkeypatch):
+    alerts = [{"number": 3, "html_url": "https://github.com/octo/shop/security/dependabot/3",
+               "dependency": {"package": {"name": "next", "ecosystem": "npm"}, "manifest_path": "web/package-lock.json"},
+               "security_advisory": {"severity": "high", "summary": "Cache poisoning"},
+               "security_vulnerability": {"first_patched_version": {"identifier": "15.5.30"}}}]
+
+    def github(request: httpx.Request) -> httpx.Response:
+        routes = {"/user": {"login": "octo"}, "/repos/octo/shop": {"full_name": "octo/shop"},
+                  "/repos/octo/shop/branches/main": {"name": "main"}, "/repos/octo/shop/dependabot/alerts": alerts}
+        body = routes.get(request.url.path)
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    monkeypatch.setenv("OPSRELAY_CRON_SECRET", "s3cret")
+    app = create_app(make_sqlite(tmp_path), settings, clock=clock, github_transport=httpx.MockTransport(github))
+    owner, other = signed_in(app), signed_in(app, "other@example.com")
+    other.post("/api/v1/workspaces", json={"name": "Other"})
+    owner.put("/api/v1/github", json={"token": "ghp_valid_token_for_tests_000"}).raise_for_status()
+    owner.post("/api/v1/repositories", json={"repo": "octo/shop", "service_name": "Shop", "base_branch": "main",
+                                             "deployed_url": "https://shop.example"}).raise_for_status()
+
+    def scheduled():
+        return TestClient(app).post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"}).json()["data"]
+
+    assert scheduled()["dependabot"] == {"created": 1}
+    def dependabot_incidents(client):
+        return [i for i in client.get("/api/v1/incidents").json()["data"] if i["evidence"].get("source") == "dependabot"]
+
+    incident = dependabot_incidents(owner)[0]
+    assert incident["severity"] == "down" and incident["title"] == "Shop: 1 open Dependabot alert"
+    assert incident["evidence"]["alerts"][0]["patched_version"] == "15.5.30"
+    assert dependabot_incidents(other) == []
+    assert scheduled()["dependabot"] == {"updated": 1}
+    assert len(dependabot_incidents(owner)) == 1  # still one incident
+
+    alerts.clear()
+    assert scheduled()["dependabot"] == {"resolved": 1}
+    assert owner.get(f"/api/v1/incidents/{incident['id']}").json()["data"]["state"] == "resolved"
+    assert owner.get("/api/v1/repositories").json()["data"][0]["dependabot"]["result"] == "resolved"

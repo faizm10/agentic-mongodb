@@ -115,7 +115,7 @@ async def add_mapping(storage: Storage, ws: str, gh: GitHub, body: dict, now: da
 
 def public_mapping(m: dict) -> dict:
     return {**{k: m[k] for k in ("service_id", "service_name", "repo", "base_branch", "deployed_url", "workflow", "created_at")},
-            "betterstack_monitor_id": m.get("betterstack_monitor_id"),
+            "betterstack_monitor_id": m.get("betterstack_monitor_id"), "dependabot": m.get("dependabot"),
             "agent": m.get("agent") or {"enabled": False, "mode": "report_only", "app": None}}
 
 
