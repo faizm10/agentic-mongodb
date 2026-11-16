@@ -71,7 +71,7 @@ def load_config(env: dict[str, str] | None = None) -> tuple[Config, list[str]]:
     env = os.environ if env is None else env
     errors = [f"{k} is required" for k in ("MONGODB_URI", "OPENAI_API_KEY", "GITHUB_TOKEN", "GITHUB_OWNER")
               if not env.get(k)]
-    repo = f"{env.get('GITHUB_OWNER', '')}/{env.get('GITHUB_REPO', 'agentic-mongodb')}"
+    repo = f"{env.get('GITHUB_OWNER', '')}/{env.get('GITHUB_REPO', 'opsrelay-agent')}"
     cfg = Config(
         env=env.get("OPSRELAY_ENV", "production"), repo=repo, repo_path=env.get("OPSRELAY_REPO_PATH", ""),
         publish_repos={r.strip() for r in env.get("OPSRELAY_PUBLISH_REPOS", "").split(",") if r.strip()},

@@ -3,7 +3,7 @@
 ## Reporting a vulnerability
 
 Please don't open a public issue. Report it privately through
-[GitHub's private vulnerability reporting](https://github.com/faizm10/agentic-mongodb/security/advisories/new)
+[GitHub's private vulnerability reporting](https://github.com/faizm10/opsrelay-agent/security/advisories/new)
 with the affected component, steps to reproduce and the impact you expect. You'll get an
 acknowledgement within a few days, and credit in the fix unless you'd rather not.
 

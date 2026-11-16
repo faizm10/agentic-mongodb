@@ -117,7 +117,7 @@ def _load_dotenv(path: Path) -> None:
 class GitHubConfig:
     token: str = field(repr=False)  # repr=False so the token never leaks into logs
     owner: str
-    repo: str = "agentic-mongodb"
+    repo: str = "opsrelay-agent"
     base_branch: str = "main"
     api_url: str = "https://api.github.com"
 
@@ -134,7 +134,7 @@ class GitHubConfig:
         return cls(
             token=os.environ["GITHUB_TOKEN"],
             owner=os.environ["GITHUB_OWNER"],
-            repo=os.getenv("GITHUB_REPO", "agentic-mongodb"),
+            repo=os.getenv("GITHUB_REPO", "opsrelay-agent"),
             base_branch=os.getenv("GITHUB_BASE_BRANCH", "main"),
         )
 
@@ -213,7 +213,7 @@ class GitHubClient:
                 "Authorization": f"Bearer {self.config.token}",
                 "Accept": "application/vnd.github+json",
                 "X-GitHub-Api-Version": API_VERSION,
-                "User-Agent": "agentic-mongodb-incident-agent",
+                "User-Agent": "opsrelay-incident-agent",
             },
             timeout=httpx.Timeout(timeout, connect=10.0),
             # Log downloads redirect to a signed blob URL; httpx drops the

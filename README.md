@@ -1,7 +1,7 @@
 # OpsRelay
 
-[![opsrelay-ci](https://github.com/faizm10/agentic-mongodb/actions/workflows/opsrelay-ci.yml/badge.svg)](https://github.com/faizm10/agentic-mongodb/actions/workflows/opsrelay-ci.yml)
-[![uptime-checks](https://github.com/faizm10/agentic-mongodb/actions/workflows/uptime-checks.yml/badge.svg)](https://github.com/faizm10/agentic-mongodb/actions/workflows/uptime-checks.yml)
+[![opsrelay-ci](https://github.com/faizm10/opsrelay-agent/actions/workflows/opsrelay-ci.yml/badge.svg)](https://github.com/faizm10/opsrelay-agent/actions/workflows/opsrelay-ci.yml)
+[![uptime-checks](https://github.com/faizm10/opsrelay-agent/actions/workflows/uptime-checks.yml/badge.svg)](https://github.com/faizm10/opsrelay-agent/actions/workflows/uptime-checks.yml)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 OpsRelay watches your sites and, when something breaks, sends an AI agent to investigate. Add your sites to a

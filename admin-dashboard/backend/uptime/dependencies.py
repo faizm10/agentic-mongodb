@@ -37,7 +37,7 @@ def _result(id: str, name: str, status: str, summary: str, checked_at: datetime,
 
 async def _github(client: httpx.AsyncClient, env: Mapping[str, str], checked_at: datetime) -> DependencyCheck:
     token, owner = env.get("GITHUB_TOKEN", ""), env.get("GITHUB_OWNER", "")
-    repo = env.get("GITHUB_REPO", "agentic-mongodb")
+    repo = env.get("GITHUB_REPO", "opsrelay-agent")
     configured = bool(token and owner)
     url = (f"https://api.github.com/repos/{quote(owner, safe='')}/{quote(repo, safe='')}"
            if configured else "https://api.github.com/rate_limit")

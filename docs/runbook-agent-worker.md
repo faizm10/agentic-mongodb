@@ -37,7 +37,7 @@ docker build -f agents/Dockerfile --build-arg OPSRELAY_RELEASE=$TAG -t opsrelay-
 # One-time: a clone of the target repo, owned by the container user
 docker volume create opsrelay-repo
 docker run --rm -v opsrelay-repo:/repo opsrelay-agent-worker:$TAG \
-  git clone https://github.com/faizm10/agentic-mongodb /repo
+  git clone https://github.com/faizm10/opsrelay-agent /repo
 
 # Config lives on the host (start from deploy/agent-worker.env.example), never in the repo
 docker run --rm --env-file /etc/opsrelay/agent-worker.env -v opsrelay-repo:/repo \
@@ -111,7 +111,7 @@ it will not resolve `awaiting_deployment` incidents until you roll forward again
    `GITHUB_PUBLISH_TOKEN`.
 2. Set the four `OPSRELAY_*_VERSION_URL` and `OPSRELAY_*_PROBE_URL` values. Each deployment must
    set `OPSRELAY_DEPLOYED_SHA` so that `/api/version` reports the commit.
-3. Set `OPSRELAY_PUBLISH_REPOS=faizm10/agentic-mongodb`, then run `check` and restart.
+3. Set `OPSRELAY_PUBLISH_REPOS=faizm10/opsrelay-agent`, then run `check` and restart.
 
 ## Checkout recovery
 

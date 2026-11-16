@@ -329,7 +329,7 @@ python -m pytest agents/tests -q    # runs offline with mongomock
 python -m agents.dev_demo reset
 OPSRELAY_CRASH_AT=pr_created python -m agents.dev_demo run   # PR created, then worker dies
 python -m agents.dev_demo run                                # new worker resumes, adopts same PR
-python -m agents.orchestrator status "faizm10/agentic-mongodb#9000001.1"
+python -m agents.orchestrator status "faizm10/opsrelay-agent#9000001.1"
 ```
 
 ### Interfaces the other modules must provide
