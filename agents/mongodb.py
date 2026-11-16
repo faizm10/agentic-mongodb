@@ -106,7 +106,10 @@ def get_client(uri: str | None = None) -> MongoClient:
         if "<" in uri:
             raise RuntimeError("MONGODB_URI in .env still has <placeholders>; paste the real "
                                "string from Atlas -> Connect -> Drivers")
-        _client = MongoClient(_escape_credentials(uri), appname="opsrelay", tz_aware=True)
+        # python.org builds on macOS ship without root certificates; certifi's bundle verifies Atlas everywhere.
+        import certifi
+        _client = MongoClient(_escape_credentials(uri), appname="opsrelay", tz_aware=True,
+                              tlsCAFile=os.environ.get("SSL_CERT_FILE") or certifi.where())
     return _client
 
 
