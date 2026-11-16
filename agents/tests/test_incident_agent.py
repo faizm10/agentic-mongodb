@@ -172,6 +172,25 @@ def test_intake_skips_bug_already_reported_by_ci(db):
     assert m.incidents(db).count_documents({"source": "live"}) == 0
 
 
+def test_alert_is_investigated_only_once_its_repo_agent_is_on_and_reports_by_default(db, agent):
+    orch, intake, github, _, _ = agent
+    alert = uptime_doc(m.utcnow(), _id="BS-9001-abc123", service_id="demo:shop", app=REPO)
+    alert["evidence"].update(source="betterstack", cause="Status 500", betterstack_incident_id="9001")
+    db[UPTIME_INCIDENTS].insert_one(alert)
+    db["opsrelay_repos"].insert_one({"_id": "demo:shop", "repo": REPO, "agent": {"enabled": False, "mode": "report_only", "app": "shopping"}})
+    assert intake.poll() == [], "agent off: the alert is not investigated"
+
+    db["opsrelay_repos"].update_one({"_id": "demo:shop"}, {"$set": {"agent.enabled": True}})
+    [iid] = intake.poll()
+    orch.run_pending()
+
+    inc = m.incidents(db).find_one({"_id": iid})
+    assert inc["live"]["alert"]["cause"] == "Status 500" and inc["app"] == "shopping"
+    assert inc["status"] == m.STATUS_REPORTED, inc.get("status_reason")
+    assert inc["patch"]["summary"] and inc["recommendation"]
+    assert github.find_pr(REPO, o.branch_for(inc)) is None, "report-only opens no PR"
+
+
 def test_live_bug_missed_by_tests_gets_regression_test_fix_and_draft_pr(db, agent):
     orch, intake, github, llm, sha = agent
     db[UPTIME_INCIDENTS].insert_one(uptime_doc(m.utcnow()))

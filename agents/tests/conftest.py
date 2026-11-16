@@ -5,6 +5,8 @@ import pytest
 
 # Fixture apps (stand-in layouts), set before any test module loads its config.
 os.environ["OPSRELAY_APPS_CONFIG"] = str(Path(__file__).with_name("apps.toml"))
+# Tests use the local embedding: a VOYAGE_API_KEY in .env would make real, rate-limited Voyage calls.
+os.environ["VOYAGE_API_KEY"] = ""
 
 from .support import build_shopping_regression
 
