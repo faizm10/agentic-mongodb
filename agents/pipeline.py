@@ -38,7 +38,7 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
         )
 
     failing = parse_failing_tests(request.failed_test_logs, app)
-    if not failing:
+    if not failing and app.kind == "python":
         return done("needs_review", "no failing pytest node ids found in the CI log")
 
     try:
@@ -55,7 +55,8 @@ def repair_ci_failure(request: RepairRequest, llm: StructuredLLM | None = None) 
                 return done("needs_review", "baseline did not reproduce the CI failure", baseline=baseline.runs)
 
             llm = llm or OpenAIStructuredLLM()
-            diagnosis = investigate(request, llm, app, reproduction=baseline.runs[0].output_tail)
+            diagnosis = investigate(request, llm, app, reproduction=baseline.runs[0].output_tail,
+                                    require_failing_tests=app.kind == "python")
             if diagnosis.outcome == "needs_review":
                 return done(
                     "needs_review", f"diagnosis: {diagnosis.review_reason}",

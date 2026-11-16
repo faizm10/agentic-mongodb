@@ -21,3 +21,26 @@ source_dirs = ["message-platform/backend/app"]
 test_dir = "tests"
 pytest_args = ["-q", "-p", "no:cacheprovider", "--no-header", "-rfE"]
 timeout_seconds = 120
+
+# Frontends (kind = "node"): the verifier runs `install` once at the failed commit, then every
+# command in `checks` must pass. CI routes a failure here when only the frontend job failed, which
+# is how Dependabot upgrades that break the typecheck or build reach the agent. tsconfig.json is
+# editable so compiler-option changes from a TypeScript upgrade can be fixed; manifests never are.
+
+[apps.shopping-web]
+kind = "node"
+root = "shopping/frontend"
+source_dirs = ["shopping/frontend/src", "shopping/frontend/tsconfig.json"]
+install = ["npm", "ci", "--no-audit", "--no-fund"]
+checks = [["npm", "run", "typecheck"], ["npm", "run", "build"]]
+timeout_seconds = 600
+baseline_runs = 1
+
+[apps.messaging-web]
+kind = "node"
+root = "message-platform/frontend"
+source_dirs = ["message-platform/frontend/src", "message-platform/frontend/tsconfig.json"]
+install = ["npm", "ci", "--no-audit", "--no-fund"]
+checks = [["npm", "run", "typecheck"], ["npm", "run", "build"]]
+timeout_seconds = 600
+baseline_runs = 1
