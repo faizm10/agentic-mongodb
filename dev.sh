@@ -67,7 +67,8 @@ setup() {
   "$ROOT/agents/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
   if has_mongodb_uri; then
     ca_file="$(agent_ca_file)"
-    (cd "$ROOT" && env ${ca_file:+SSL_CERT_FILE="$ca_file"} "$ROOT/agents/.venv/bin/python" -m agents.orchestrator setup)
+    (cd "$ROOT" && env ${ca_file:+SSL_CERT_FILE="$ca_file"} "$ROOT/agents/.venv/bin/python" -m agents.orchestrator setup) \
+      || echo "Dependencies are installed; the agent's MongoDB collections are not set up yet (see above)."
   else
     echo "Add MONGODB_URI to .env, then run ./dev.sh setup again to prepare the agent's MongoDB collections."
   fi
