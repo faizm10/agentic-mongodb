@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Database, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Database, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plug, Plus, Search, Siren, XCircle } from "lucide-react";
 import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
 
@@ -156,6 +156,7 @@ const NAV = [
   { href: "/ai-agent", label: "Investigations", Icon: Search },
   { href: "/sites", label: "Sites", Icon: Globe },
   { href: "/repositories", label: "Repositories", Icon: GitBranch },
+  { href: "/connectors", label: "Connectors", Icon: Plug },
 ];
 
 function NavLinks() {

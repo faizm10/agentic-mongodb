@@ -170,8 +170,8 @@ own. Each workspace adds the sites it monitors under **Sites** (a page URL and a
 GitHub Actions schedule calls `POST /api/v1/cron/check` every 5 minutes to check every workspace's sites.
 The first account to sign up claims the `demo` workspace; later accounts create their own.
 
-Under **Repositories**, a workspace connects GitHub with a token (stored server-side, never returned) and
-maps a repository it can access to a service: base branch, deployed URL and an optional workflow check.
+Under **Connectors**, a workspace connects GitHub with a token (stored server-side, never returned) and
+creates its Better Stack webhook. Under **Repositories** it maps a repository the token can access to a service: base branch, deployed URL and an optional workflow check.
 The API checks the branch and workflow exist on GitHub before saving the mapping.
 
 **Better Stack alerts.** Each workspace gets its own webhook URL plus a secret that Better Stack sends as

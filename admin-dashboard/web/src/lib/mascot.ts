@@ -27,14 +27,14 @@ export function mascotMessage(s: Summary): MascotMessage {
       links: [{ href: incidentHref(incident.id), label: "Open incident" }],
     };
   }
-  const setup = (key: string, text: string, label: string): MascotMessage =>
-    ({ key: `${ws}:${key}`, tone: "accent", text, links: [{ href: "/repositories", label }] });
+  const setup = (key: string, text: string, label: string, href = "/repositories"): MascotMessage =>
+    ({ key: `${ws}:${key}`, tone: "accent", text, links: [{ href, label }] });
   if (!s.services.length) {
     return { key: `${ws}:site`, tone: "accent", text: "Add a site so I can start checking it.", links: [{ href: "/sites", label: "Add a site" }] };
   }
-  if (!s.setup.github_connected) return setup("github", "Connect GitHub so I know which repositories your services run.", "Connect GitHub");
+  if (!s.setup.github_connected) return setup("github", "Connect GitHub so I know which repositories your services run.", "Connect GitHub", "/connectors");
   if (!s.repositories.length) return setup("repo", "Map a repository to a service so incidents point at the right code.", "Add a repository");
-  if (!s.setup.betterstack_configured) return setup("betterstack", "Connect Better Stack so its alerts open incidents here.", "Connect Better Stack");
+  if (!s.setup.betterstack_configured) return setup("betterstack", "Connect Better Stack so its alerts open incidents here.", "Connect Better Stack", "/connectors");
   if (!s.repositories.some((r) => r.agent.enabled)) {
     return setup("agent", "Turn on the repair agent for a repository. It starts in report-only mode.", "Enable the agent");
   }
