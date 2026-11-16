@@ -189,12 +189,17 @@ Under **Repositories**, a workspace connects GitHub with a token (stored server-
 maps a repository it can access to a service: base branch, deployed URL and an optional workflow check.
 The API checks the branch and workflow exist on GitHub before saving the mapping.
 
+**Better Stack alerts.** Each workspace gets its own webhook URL plus a secret that Better Stack sends as
+the `X-OpsRelay-Secret` header (Better Stack doesn't sign webhooks). The payload's monitor id picks the
+mapped service. One Better Stack incident is one OpsRelay incident: an exact redelivery is ignored, and
+acknowledged, resolved and reopened events update that same incident.
+
 ## Durable state in Atlas
 
 | Collection | Owner | Holds |
 | --- | --- | --- |
 | `uptime_incidents`, `uptime_*` | uptime monitor | incidents, checks, service state, recovery phase |
-| `opsrelay_users`, `opsrelay_emails`, `opsrelay_sessions`, `opsrelay_workspaces` | uptime API | dashboard accounts, hashed session tokens, workspaces; `opsrelay_github`, `opsrelay_repos`: GitHub connections and repository mappings |
+| `opsrelay_users`, `opsrelay_emails`, `opsrelay_sessions`, `opsrelay_workspaces` | uptime API | dashboard accounts, hashed session tokens, workspaces; `opsrelay_github`, `opsrelay_repos`: GitHub connections and repository mappings; `opsrelay_bs_*`, `opsrelay_alert_*`: Better Stack webhooks, monitor mappings, delivery dedupe |
 | `incidents`, `workflow_steps` | agent orchestrator | repair stage machine, PR intent, recommendation, audit trail |
 | `memories` | agent orchestrator | past fixes for Vector Search |
 | `checkout_recoveries` | recovery worker | per-incident attempts, evidence, retry intent, verified results, workers, events |
