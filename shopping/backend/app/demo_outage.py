@@ -13,7 +13,7 @@ def mode(data_dir: Path) -> str | None:
         value = json.loads((data_dir / FILENAME).read_text(encoding="utf-8")).get("scenario")
     except (FileNotFoundError, OSError, ValueError, AttributeError):
         return None
-    return value if value in {"payment", "images", "inventory"} else None
+    return value if value in {"payment", "images", "inventory", "order_write"} else None
 
 
 def image_url(url: str, data_dir: Path) -> str:
