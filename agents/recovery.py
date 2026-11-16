@@ -20,6 +20,11 @@ resend leaves the intent behind. The next worker looks the confirmation up by it
 before it would ever send again, and NovaConnect stores one confirmation per ID, so recovery
 never produces a second confirmation.
 
+Writes (the resend and the outcome recorded in NovaMart) need ``OPSRELAY_RECOVERY_WRITES=1``,
+the default everywhere except ``OPSRELAY_ENV=production``. With writes off, a missing
+confirmation stays open for review with the resend it would make. ``OPSRELAY_SERVICE_TOKEN``
+is sent as a bearer token to both services, which require it when they have it set.
+
 The incident closes (monitor side) once the phase here is ``complete``: every affected
 attempt has a verified final outcome that NovaMart has recorded too.
 
@@ -88,8 +93,10 @@ class _Http:
         self.transport = transport
 
     def _request(self, method: str, path: str, *, ok_404: bool = False, **kwargs) -> dict | None:
+        token = os.getenv("OPSRELAY_SERVICE_TOKEN")
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
         try:
-            with httpx.Client(timeout=self.timeout, transport=self.transport) as client:
+            with httpx.Client(timeout=self.timeout, transport=self.transport, headers=headers) as client:
                 response = client.request(method, f"{self.base_url}{path}", **kwargs)
         except httpx.TimeoutException as exc:
             raise LookupFailed(self.source, "timeout",
@@ -159,6 +166,11 @@ class NovaConnectRecords(_Http):
 # --------------------------------------------------------------------------- #
 # One-shot demo fault                                                          #
 # --------------------------------------------------------------------------- #
+def writes_enabled() -> bool:
+    default = "0" if os.getenv("OPSRELAY_ENV") == "production" else "1"
+    return os.getenv("OPSRELAY_RECOVERY_WRITES", default) == "1"
+
+
 def fault_file() -> Path:
     default = Path(__file__).resolve().parents[1] / ".dev" / "recovery-fault.json"
     return Path(os.getenv("OPSRELAY_RECOVERY_FAULT_FILE") or default)
@@ -195,7 +207,9 @@ def crash_once(point: str) -> None:
 class RecoveryWorker:
     def __init__(self, novamart: NovaMartRecords | None = None, novaconnect: NovaConnectRecords | None = None,
                  db: Database | None = None, worker_id: str | None = None, lease_seconds: int = LEASE_SECONDS,
-                 clock: Callable[[], datetime] = m.utcnow, crash: Callable[[str], None] = crash_once) -> None:
+                 clock: Callable[[], datetime] = m.utcnow, crash: Callable[[str], None] = crash_once,
+                 writes: bool | None = None) -> None:
+        self.writes = writes_enabled() if writes is None else writes
         self.novamart = novamart or NovaMartRecords()
         self.novaconnect = novaconnect or NovaConnectRecords()
         self.db = m.get_db(db)
@@ -355,6 +369,10 @@ class RecoveryWorker:
             return self._settle_found(doc, a, confirmation, resumed=bool(a.get("retry_intent")))
 
         # Confirmation confirmed missing: resend only the confirmation. Save the intent first.
+        if not self.writes:
+            return self._review(doc, a, [f"authorization to resend confirmation {confirmation_id}"],
+                                f"Confirmation {confirmation_id} is missing. Recovery writes are disabled, so it "
+                                "was not resent; resending it with the same ID is the next step.")
         if not a.get("retry_intent"):
             a["retry_intent"] = {"confirmation_id": confirmation_id, "at": now, "worker_id": self.worker_id}
             doc = self._save_attempt(doc, a, ("retry_intent_saved",
@@ -408,6 +426,9 @@ class RecoveryWorker:
 
     def _record_outcome(self, doc: dict, a: dict) -> dict:
         """Tell NovaMart, the owner of the attempt, so its own record reaches a final state too."""
+        if not self.writes:
+            return self._save_attempt(doc, {**a, "outcome_recorded": False},
+                                      ("outcome_not_recorded", "Recovery writes are disabled."))
         evidence = {"order_state": (a["evidence"].get("order") or {}).get("state"),
                     "confirmation": a.get("verified_result") or a["evidence"].get("confirmation")}
         try:
