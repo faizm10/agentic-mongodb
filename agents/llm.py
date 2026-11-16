@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 T = TypeVar("T", bound=BaseModel)
 
-DEFAULT_MODEL = "gpt-4.1-mini"
+DEFAULT_MODEL = "gpt-4.1"
 
 
 class StructuredLLM(Protocol):
