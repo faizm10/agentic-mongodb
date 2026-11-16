@@ -359,7 +359,7 @@ def create_app(
         lease = run.get("lease_expires_at")
         if status == "open":
             state = "working" if lease and lease > now else "waiting"
-        elif status == "awaiting_merge":
+        elif status in ("awaiting_merge", "reported"):
             state = "awaiting_review"
         elif status in ("needs_review", "failed", "rejected"):
             state = "needs_attention"
