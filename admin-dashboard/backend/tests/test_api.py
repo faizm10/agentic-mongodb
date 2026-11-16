@@ -3,6 +3,7 @@
 import asyncio
 from datetime import timedelta
 
+import httpx
 import pytest
 
 from fastapi.testclient import TestClient
@@ -259,3 +260,48 @@ def test_accounts_only_see_their_own_workspaces(env):
     assert other.post("/api/v1/auth/sign-in", json={"email": "other@example.com", "password": "wrong pass"}).status_code == 401
     other.post("/api/v1/auth/sign-out")
     assert other.get("/api/v1/auth/me").status_code == 401
+
+
+def test_workspace_connects_github_and_maps_repositories(tmp_path, settings, clock):
+    def github(request: httpx.Request) -> httpx.Response:
+        if request.headers["authorization"] != "Bearer ghp_valid_token_for_tests_000":
+            return httpx.Response(401)
+        routes = {
+            "/user": {"login": "octo"},
+            "/user/repos": [{"full_name": "octo/shop", "default_branch": "main", "private": True},
+                            {"full_name": "octo/chat", "default_branch": "trunk", "private": False}],
+            "/repos/octo/shop": {"full_name": "octo/shop"}, "/repos/octo/chat": {"full_name": "octo/chat"},
+            "/repos/octo/shop/branches/main": {"name": "main"}, "/repos/octo/chat/branches/trunk": {"name": "trunk"},
+            "/repos/octo/shop/actions/workflows/ci.yml": {"path": ".github/workflows/ci.yml"},
+        }
+        body = routes.get(request.url.path)
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    app = create_app(make_sqlite(tmp_path), settings, clock=clock, github_transport=httpx.MockTransport(github))
+    owner = signed_in(app)
+    assert owner.put("/api/v1/github", json={"token": "ghp_wrong_token_for_tests_0000"}).status_code == 422
+    assert owner.post("/api/v1/repositories", json={"repo": "octo/shop", "service_name": "Shop", "base_branch": "main",
+                                                    "deployed_url": "https://shop.example"}).status_code == 409
+    connected = owner.put("/api/v1/github", json={"token": "ghp_valid_token_for_tests_000"}).json()["data"]
+    assert connected["login"] == "octo" and "token" not in connected
+    assert [r["full_name"] for r in owner.get("/api/v1/github/repos").json()["data"]] == ["octo/shop", "octo/chat"]
+
+    shop = {"repo": "octo/shop", "service_name": "Shop", "base_branch": "main", "deployed_url": "https://shop.example", "workflow": "ci.yml"}
+    chat = {"repo": "octo/chat", "service_name": "Chat API", "base_branch": "trunk", "deployed_url": "https://chat.example"}
+    assert owner.post("/api/v1/repositories", json={**chat, "base_branch": "nope"}).json()["error"]["message"] == \
+        "Branch 'nope' doesn't exist in octo/chat."
+    assert owner.post("/api/v1/repositories", json={**chat, "workflow": "missing.yml"}).status_code == 422
+    assert owner.post("/api/v1/repositories", json=shop).status_code == 200
+    assert owner.post("/api/v1/repositories", json=chat).status_code == 200
+    assert owner.post("/api/v1/repositories", json=shop).status_code == 409
+    listed = owner.get("/api/v1/repositories").json()["data"]
+    assert {(m["service_id"], m["repo"], m["base_branch"], m["workflow"]) for m in listed} == {
+        ("shop", "octo/shop", "main", "ci.yml"), ("chat-api", "octo/chat", "trunk", None)}
+
+    other = signed_in(app, "other@example.com")
+    other.post("/api/v1/workspaces", json={"name": "Other"})
+    assert other.get("/api/v1/repositories").json()["data"] == []
+    assert other.get("/api/v1/github").json()["data"] == {"connected": False}
+    assert other.delete("/api/v1/repositories/shop").status_code == 404
+    assert owner.delete("/api/v1/repositories/shop").status_code == 200
+    assert [m["service_id"] for m in owner.get("/api/v1/repositories").json()["data"]] == ["chat-api"]
