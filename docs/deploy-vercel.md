@@ -25,6 +25,7 @@ repository secret. The repair agent worker still runs wherever you run it (`./de
 ## Environment (production and preview)
 
 `MONGODB_URI`, `MONGODB_DB`, `OPSRELAY_STORAGE=mongodb`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `GITHUB_OWNER`,
-`GITHUB_REPO`, and `OPSRELAY_CRON_SECRET` (same value as the GitHub secret). Previews use the same Atlas
+`GITHUB_REPO`, `OPSRELAY_CRON_SECRET` (same value as the GitHub secret) and `OPSRELAY_BLOCK_PRIVATE_URLS=1`
+(sites may not point at private or internal addresses). Previews use the same Atlas
 database. Atlas accepts connections from `0.0.0.0/0`, because Vercel functions have no fixed IPs; the
 database password is the protection, so rotate it if it leaks.

@@ -408,3 +408,27 @@ def test_sites_belong_to_one_workspace_and_scheduled_checks_need_the_secret(env,
 
     assert other.delete(f"/api/v1/sites/{site_id}").status_code == 200
     assert other.get("/api/v1/sites").json()["data"] == []
+
+
+def test_private_site_urls_are_refused_when_blocking_is_on(env, settings, clock, monkeypatch):
+    from uptime import netguard
+
+    app = create_app(env["storage"], settings, clock=clock)
+    owner = signed_in(app)
+    monkeypatch.setenv("OPSRELAY_BLOCK_PRIVATE_URLS", "1")
+    for body in ({"name": "a", "url": "http://127.0.0.1:8300"},
+                 {"name": "b", "url": "https://example.com", "health_url": "http://169.254.169.254/latest"}):
+        response = owner.post("/api/v1/sites", json=body)
+        assert response.status_code == 422 and "public internet" in response.json()["error"]["message"]
+    with pytest.raises(httpx.ConnectError):  # also refused per request, which covers redirects
+        asyncio.run(netguard.guard_request(httpx.Request("GET", "http://localhost/")))
+    monkeypatch.delenv("OPSRELAY_BLOCK_PRIVATE_URLS")
+    asyncio.run(netguard.guard_request(httpx.Request("GET", "http://localhost/")))  # local dev allows it
+
+
+def test_repeated_sign_in_attempts_are_rate_limited(env, settings, clock):
+    client = TestClient(create_app(env["storage"], settings, clock=clock))
+    creds = {"email": "someone@example.com", "password": "wrong password"}
+    assert all(client.post("/api/v1/auth/sign-in", json=creds).status_code == 401 for _ in range(10))
+    blocked = client.post("/api/v1/auth/sign-in", json=creds)
+    assert blocked.status_code == 429 and int(blocked.headers["retry-after"]) > 0

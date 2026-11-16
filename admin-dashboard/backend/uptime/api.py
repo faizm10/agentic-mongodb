@@ -13,6 +13,7 @@ import logging
 import secrets
 import os
 import time
+from collections import defaultdict, deque
 from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
@@ -24,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, repositories, walkthrough
+from . import __version__, accounts, alerts, assistant, netguard, repositories, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -328,6 +329,23 @@ def create_app(
             raise HTTPException(404, f"Unknown workspace '{requested}'.")
         return ws["id"]
 
+    # Per-instance sliding windows: they slow guessing and runaway costs down, but serverless instances
+    # don't share them, so they are a brake rather than a hard quota.
+    hits: dict[str, deque[float]] = defaultdict(deque)
+
+    def limit(key: str, max_hits: int, per_seconds: int) -> None:
+        now, window = time.monotonic(), hits[key]
+        while window and window[0] <= now - per_seconds:
+            window.popleft()
+        if len(window) >= max_hits:
+            retry = int(window[0] + per_seconds - now) + 1
+            raise HTTPException(429, f"Too many requests. Try again in {retry}s.", headers={"Retry-After": str(retry)})
+        window.append(now)
+
+    def client_ip(request: Request) -> str:
+        forwarded = request.headers.get("x-forwarded-for", "")
+        return forwarded.split(",")[0].strip() or (request.client.host if request.client else "unknown")
+
     def start_session(response: JSONResponse, request: Request, user: dict[str, Any]) -> JSONResponse:
         response.set_cookie(SESSION_COOKIE, accounts.start_session(storage, user["id"], clock()),
                             max_age=accounts.SESSION_DAYS * 86400, httponly=True, samesite="lax",
@@ -336,8 +354,10 @@ def create_app(
 
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException):
-        code = {401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT"}.get(exc.status_code, "ERROR")
-        return JSONResponse(status_code=exc.status_code, content={"error": {"code": code, "message": exc.detail}})
+        code = {401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT",
+                429: "RATE_LIMITED"}.get(exc.status_code, "ERROR")
+        return JSONResponse(status_code=exc.status_code, content={"error": {"code": code, "message": exc.detail}},
+                            headers=exc.headers)
 
     @app.exception_handler(RequestValidationError)
     async def validation_error(_: Request, exc: RequestValidationError):
@@ -509,6 +529,7 @@ def create_app(
 
     @app.post("/api/v1/auth/sign-up", response_model=Envelope[dict[str, Any]])
     def sign_up(body: CredentialsIn, request: Request):
+        limit(f"sign-up:{client_ip(request)}", 5, 3600)
         try:
             user = accounts.sign_up(storage, body.email, body.password, clock())
         except accounts.AccountError as exc:
@@ -517,6 +538,8 @@ def create_app(
 
     @app.post("/api/v1/auth/sign-in", response_model=Envelope[dict[str, Any]])
     def sign_in(body: CredentialsIn, request: Request):
+        limit(f"sign-in:{client_ip(request)}", 10, 60)
+        limit(f"sign-in:{body.email.lower()}", 10, 900)
         try:
             user = accounts.sign_in(storage, body.email, body.password)
         except accounts.AccountError as exc:
@@ -762,6 +785,10 @@ def create_app(
 
     @app.post("/api/v1/sites", response_model=Envelope[dict[str, Any]])
     async def add_site(body: SiteIn, ws: str = Depends(workspace)):
+        limit(f"add-site:{ws}", 20, 3600)
+        for url in filter(None, (body.url, body.health_url)):
+            if reason := await asyncio.to_thread(netguard.check_url, url):
+                raise HTTPException(422, f"Sites must be on the public internet: {reason}")
         site = ServiceConfig(id=f"site-{secrets.token_hex(5)}", name=body.name.strip(), frontend_url=body.url,
                              backend_url=body.health_url or "", interval_seconds=settings.interval_seconds, workspace_id=ws)
         storage.upsert_service(site)
@@ -796,6 +823,7 @@ def create_app(
 
     @app.post("/api/v1/monitor/check-now", response_model=Envelope[dict[str, Any]])
     async def check_now(ws: str = Depends(workspace)):
+        limit(f"check-now:{ws}", 6, 60)
         result = await monitor.run_cycle(scheduled=False, workspace_id=ws)
         if result is None:
             raise HTTPException(409, "A monitoring cycle is already running.")
@@ -832,6 +860,7 @@ def create_app(
 
     @app.post("/api/v1/assistant/chat", response_model=Envelope[dict[str, Any]])
     async def assistant_chat(body: assistant.ChatIn, ws: str = Depends(workspace)):
+        limit(f"assistant:{ws}", 30, 3600)  # each message is a paid model call
         try:
             reply = await assistant.answer(assistant_context(body.incident_id, clock(), ws), body.messages,
                                            transport=assistant_transport)
