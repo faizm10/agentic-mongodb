@@ -4,14 +4,13 @@ import Link from "next/link";
 import { ArrowUpRight, CheckCircle2, GitPullRequest, Siren } from "lucide-react";
 import { type Incident, isDemoIncident } from "@/lib/api";
 import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
-import { StatusIcon } from "./ui";
+import { IncidentBadge } from "./recovery";
+import { Badge, StatusIcon } from "./ui";
 
 export function RouteBadge({ route }: { route: Incident["investigation_route"] }) {
   const r = ROUTE_LABELS[route];
   return (
-    <span title={r.hint} className="inline-flex items-center rounded-md border border-line-strong bg-raised px-1.5 py-0.5 text-[11px] font-medium text-muted">
-      {r.label}
-    </span>
+    <Badge tone="neutral" title={r.hint}>{r.label}</Badge>
   );
 }
 
@@ -26,12 +25,10 @@ export function IncidentRow({ incident }: { incident: Incident }) {
       <span className="absolute left-0 top-1 flex h-4 w-4 items-center justify-center">
         {open ? <StatusIcon status={incident.severity} className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4 text-ok" />}
       </span>
-      <Link href={`/incidents/${encodeURIComponent(incident.id)}`} className="group block rounded-xl p-3 -m-3 transition hover:bg-hover">
+      <Link href={`/incidents/${encodeURIComponent(incident.id)}`} className="group -m-3 block rounded-lg p-3 transition hover:bg-hover">
         <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
           <span className="font-medium text-ink">{incident.title}</span>
-          <span className={`rounded-md px-1.5 py-0.5 text-[11px] font-semibold ${open ? "bg-crit/15 text-crit" : "bg-ok/10 text-ok"}`}>
-            {open ? "Ongoing" : "Resolved"}
-          </span>
+          <IncidentBadge incident={incident} />
           {!demo && <RouteBadge route={incident.investigation_route} />}
           <ArrowUpRight className="ml-auto h-4 w-4 text-faint opacity-0 transition group-hover:opacity-100" />
         </div>
@@ -63,7 +60,7 @@ export function IncidentTimeline({ active, recent }: { active: Incident[]; recen
         <span className="ml-auto text-xs text-faint">Detected by the uptime monitor</span>
       </div>
       {active.length === 0 && recent.length === 0 ? (
-        <div className="mt-6 flex items-center gap-3 rounded-xl border border-dashed border-line-strong p-5 text-sm text-muted">
+        <div className="mt-6 flex items-center gap-3 rounded-lg border border-dashed border-line-strong p-5 text-sm text-muted">
           <CheckCircle2 className="h-5 w-5 text-ok" /> No incidents recorded yet.
         </div>
       ) : (

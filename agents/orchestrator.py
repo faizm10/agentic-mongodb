@@ -59,7 +59,8 @@ POLL_SECONDS = int(os.getenv("POLL_SECONDS", "30"))
 
 FAILED_RUN_FIELDS = ("repo", "app", "run_id", "run_attempt", "commit_sha",
                      "failed_logs", "failed_tests", "html_url", "head_branch", "source", "live")
-PATCH_FIELDS = ("diff", "files", "changed_files", "summary", "root_cause", "added_tests", "investigation")
+PATCH_FIELDS = ("diff", "files", "changed_files", "summary", "root_cause", "added_tests", "investigation",
+                "recommendation")
 
 
 class GitHub(Protocol):

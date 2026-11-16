@@ -40,7 +40,7 @@ export function DependenciesPanel() {
             const state = STATE[item.status];
             const Icon = ICON[item.id];
             return (
-              <article key={item.id} className="rounded-xl border border-line-strong bg-raised/50 p-4">
+              <article key={item.id} className="card p-4">
                 <div className="flex items-center gap-2">
                   <Icon className="h-4 w-4 text-muted" aria-hidden="true" />
                   <h3 className="font-medium text-ink">{item.name}</h3>

@@ -4,8 +4,13 @@ Runs the *real* checkout evaluation code (quantity math, promotions, tax,
 shipping, inventory validation) against a synthetic in-memory catalog and
 compares the results with independently computed golden values.
 
-Guarantees: no order is created, no inventory is reserved, no payment is
-attempted and nothing is written to disk. The probe verifies this itself.
+It also runs one fresh synthetic checkout end to end (attempt record, order write and
+the confirmation sent through NovaConnect) against a throwaway store, so a checkout
+that would fail for customers fails the probe.
+
+Guarantees: no real order is created, no inventory is reserved, no payment is
+attempted and the real store is never written. The probe verifies this itself. The
+synthetic checkout's confirmation is sent to NovaConnect flagged ``probe``.
 
 Run from the command line (exit code 1 when unhealthy):
     python -m app.probe
@@ -13,17 +18,22 @@ Run from the command line (exit code 1 when unhealthy):
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import re
 import sys
+import tempfile
 import time
-from datetime import datetime, timezone
+import uuid
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Callable
 
 from . import demo_outage, inventory, pricing
 from .catalog import Catalog, Product
 from .checkout import CartItem, CheckoutService
 from .errors import InsufficientStockError, NovaMartError
+from .store import DemoStore
 
 PROBE_CATALOG = Catalog(
     products=(
@@ -38,6 +48,16 @@ PROBE_CATALOG = Catalog(
     ),
     categories=(),
 )
+
+# The synthetic checkout needs stock; it runs against a throwaway store.
+PROBE_CHECKOUT_CATALOG = Catalog(
+    products=tuple(dataclasses.replace(p, stock=1_000) for p in PROBE_CATALOG.products),
+    categories=(),
+)
+PROBE_CUSTOMER = {"full_name": "OpsRelay Probe", "email": "probe@opsrelay.invalid", "phone": None}
+PROBE_ADDRESS = {"line1": "1 Probe Way", "line2": None, "city": "Testville", "state": "CA",
+                 "postal_code": "00000", "country": "US"}
+INTERRUPTED_WINDOW = timedelta(hours=24)
 
 # Golden values computed by hand, independent of the code under test:
 #   A: $24.99 x 3 = $74.97   B: $12.50 x 2 = $25.00   subtotal = $99.97
@@ -70,7 +90,7 @@ def _expect(actual: Any, expected: Any, message: str) -> None:
         raise _CheckFailed(message, expected, actual)
 
 
-def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
+def run_checkout_probe(service: CheckoutService, *, request_id: str | None = None) -> dict[str, Any]:
     started = time.perf_counter()
     store = service.store
     orders_before = store.order_count()
@@ -225,7 +245,35 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
 
     check("order_store_access", "orders", "backend/app/store.py::DemoStore", store_check)
 
-    # 9. Side-effect verification -------------------------------------------
+    # 9. A fresh checkout completes -------------------------------------------
+    def checkout_flow_check() -> dict[str, Any]:
+        checkout_id = f"probe-{uuid.uuid4().hex[:20]}"
+        with tempfile.TemporaryDirectory(prefix="novamart-probe-") as tmp:
+            scratch = CheckoutService(PROBE_CHECKOUT_CATALOG, DemoStore(Path(tmp)), clock=service.clock,
+                                      confirmations=service.confirmations, log=service.log)
+            t0 = time.perf_counter()
+            try:
+                result = scratch.checkout(checkout_id, [CartItem("probe-sku-a", 1)], None, "standard",
+                                          PROBE_CUSTOMER, PROBE_ADDRESS, request_id=request_id, probe=True)
+            except NovaMartError as exc:
+                record = scratch.checkout_record(checkout_id)
+                attempt = record["attempt"] or {}
+                raise _CheckFailed(
+                    f"Checkout returned {exc.code} (HTTP {exc.status_code}): {exc.message}",
+                    {"checkout": "succeeds"},
+                    {"checkout": "failed", "error_code": exc.code, "http_status": exc.status_code,
+                     "checkout_id": checkout_id, "request_id": request_id,
+                     "order_saved": record["order"] is not None,
+                     "order_id": (record["order"] or {}).get("order_id"),
+                     "confirmation": attempt.get("confirmation"),
+                     "elapsed_ms": round((time.perf_counter() - t0) * 1000, 1)},
+                ) from exc
+        return {"actual": {"checkout": "succeeded", "checkout_id": checkout_id, "request_id": request_id,
+                           "order_id": result.order["order_id"], "confirmation": result.confirmation["status"]}}
+
+    check("checkout_completes", "checkout", "backend/app/checkout.py::CheckoutService.checkout", checkout_flow_check)
+
+    # 10. Side-effect verification -------------------------------------------
     orders_after = store.order_count()
     mtime_after = store.path.stat().st_mtime_ns if store.path.exists() else None
     side_effects = {
@@ -276,6 +324,8 @@ def run_checkout_probe(service: CheckoutService) -> dict[str, Any]:
         "failed_checks": [c["name"] for c in failures],
         "checks": checks,
         "side_effects": side_effects,
+        # Customer checkouts in the last 24 h without a final outcome, for OpsRelay's recovery.
+        "interrupted_checkouts": store.count_unfinished(datetime.now(timezone.utc) - INTERRUPTED_WINDOW),
     }
 
 

@@ -78,3 +78,15 @@ class MessageServiceUnavailableError(MessagingError):
     status_code = 503
     code = "MESSAGE_SERVICE_UNAVAILABLE"
     component = "messages"
+
+
+class ConfirmationNotFoundError(MessagingError):
+    status_code = 404
+    code = "CONFIRMATION_NOT_FOUND"
+    component = "confirmations"
+
+
+class ConfirmationConflictError(MessagingError):
+    status_code = 409
+    code = "CONFIRMATION_CONFLICT"
+    component = "confirmations"

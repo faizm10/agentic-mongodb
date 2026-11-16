@@ -73,6 +73,7 @@ class FakeApps:
 
     def __init__(self) -> None:
         self.mode = {"novamart": "healthy", "novaconnect": "healthy"}
+        self.interrupted: dict[str, int] = {}  # interrupted_checkouts reported by a healthy probe
         self.requests: list[str] = []
 
     async def handler(self, request: httpx.Request) -> httpx.Response:
@@ -99,7 +100,10 @@ class FakeApps:
             return httpx.Response(200, text="<html>oops</html>")
         if mode == "functional_bug":
             return httpx.Response(503, json=SHOP_PROBE_FAIL if service == "novamart" else MSG_PROBE_FAIL)
-        return httpx.Response(200, json={"status": "healthy", "summary": "all checks passed", "failed_checks": [], "checks": []})
+        body = {"status": "healthy", "summary": "all checks passed", "failed_checks": [], "checks": []}
+        if service in self.interrupted:
+            body["interrupted_checkouts"] = self.interrupted[service]
+        return httpx.Response(200, json=body)
 
     def transport(self) -> httpx.MockTransport:
         return httpx.MockTransport(self.handler)

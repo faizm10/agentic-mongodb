@@ -58,7 +58,7 @@ export function UptimeBars({ bars, window, height = 34, label }: { bars: Bar[]; 
 
       {hovered && (
         <div
-          className="pointer-events-none absolute bottom-full z-20 mb-2.5 w-60 -translate-x-1/2 rounded-xl border border-line-strong bg-raised p-3 text-xs shadow-2xl shadow-black/50"
+          className="pointer-events-none absolute bottom-full z-20 mb-2.5 w-60 -translate-x-1/2 rounded-lg border border-line-strong bg-raised p-3 text-xs shadow-2xl shadow-black/50"
           style={{ left: `clamp(7.5rem, ${leftPct}%, calc(100% - 7.5rem))` }}
         >
           <p className="tabular text-muted">
@@ -207,7 +207,7 @@ export function LatencyChart({ title, points, height = 150 }: { title: string; p
           )}
           {hp && (
             <div
-              className="pointer-events-none absolute -top-2 z-10 w-44 -translate-x-1/2 -translate-y-full rounded-xl border border-line-strong bg-raised p-2.5 text-xs shadow-2xl shadow-black/50"
+              className="pointer-events-none absolute -top-2 z-10 w-44 -translate-x-1/2 -translate-y-full rounded-lg border border-line-strong bg-raised p-2.5 text-xs shadow-2xl shadow-black/50"
               style={{ left: `clamp(5.5rem, ${(x(hover!) / 1000) * 100}%, calc(100% - 5.5rem))` }}
             >
               <p className="text-muted">{clock(hp.t, true)}</p>

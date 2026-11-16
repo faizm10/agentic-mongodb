@@ -19,13 +19,56 @@ from fastapi.testclient import TestClient
 
 from app.catalog import Catalog
 from app.checkout import CheckoutService
+from app.confirmations import ConfirmationRequest, ConfirmationResult, ConfirmationUnavailable
 from app.main import create_app
 from app.store import DemoStore
 
 REPORT_DIR = Path(__file__).resolve().parent.parent / "test-results"
 
 
+class FakeConfirmations:
+    """In-memory NovaConnect: one record per confirmation ID, like the real service.
+
+    ``fail_next`` makes upcoming sends fail; ``record_before_failing`` controls whether
+    the failed send was still recorded (a lost response) or never arrived.
+    """
+
+    def __init__(self) -> None:
+        self.records: dict[str, dict[str, Any]] = {}
+        self.sends: list[ConfirmationRequest] = []
+        self.fail_next = 0
+        self.record_before_failing = False
+        self.deliver = True
+
+    def send(self, request: ConfirmationRequest) -> ConfirmationResult:
+        self.sends.append(request)
+        replayed = request.confirmation_id in self.records
+        if self.fail_next and self.record_before_failing:
+            self._record(request)
+        if self.fail_next:
+            self.fail_next -= 1
+            raise ConfirmationUnavailable("timeout", "NovaConnect did not answer POST /api/confirmations within 2.0s.",
+                                          elapsed_ms=2000.0)
+        record = self._record(request)
+        return ConfirmationResult(request.confirmation_id, record["status"], record["message_id"], replayed, 3.0)
+
+    def _record(self, request: ConfirmationRequest) -> dict[str, Any]:
+        return self.records.setdefault(request.confirmation_id, {
+            "confirmation_id": request.confirmation_id, "checkout_id": request.checkout_id,
+            "order_id": request.order_id, "status": "delivered" if self.deliver else "accepted",
+            "message_id": f"cmsg-{len(self.records) + 1}",
+        })
+
+    def lookup(self, confirmation_id: str) -> dict[str, Any] | None:
+        return self.records.get(confirmation_id)
+
+
 # ---------------------------------------------------------------- fixtures
+@pytest.fixture
+def confirmations() -> FakeConfirmations:
+    return FakeConfirmations()
+
+
 @pytest.fixture
 def data_dir(tmp_path: Path) -> Path:
     return tmp_path / "data"
@@ -42,13 +85,13 @@ def store(data_dir: Path) -> DemoStore:
 
 
 @pytest.fixture
-def service(catalog: Catalog, store: DemoStore) -> CheckoutService:
-    return CheckoutService(catalog, store)
+def service(catalog: Catalog, store: DemoStore, confirmations: FakeConfirmations) -> CheckoutService:
+    return CheckoutService(catalog, store, confirmations=confirmations)
 
 
 @pytest.fixture
-def client(data_dir: Path) -> TestClient:
-    return TestClient(create_app(data_dir=data_dir))
+def client(data_dir: Path, confirmations: FakeConfirmations) -> TestClient:
+    return TestClient(create_app(data_dir=data_dir, confirmations=confirmations))
 
 
 @pytest.fixture

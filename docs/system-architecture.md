@@ -1,139 +1,201 @@
-# OpsRelay and NovaMart: current system architecture
+# OpsRelay, NovaMart and NovaConnect: system architecture
 
-This diagram describes the code in this repository as of 2026-11-14. Solid arrows are implemented calls or data flows. Dashed arrows are available components that are not wired into the running end-to-end worker, or deployment steps that require manual action.
+This document describes the code in this repository as of 2026-11-15. It is organised around one
+end-to-end incident: **NovaMart saves an order, then times out calling NovaConnect for the order
+confirmation, and checkout reports failure although the order exists.** Both homepages keep
+loading. Solid arrows are implemented calls; dashed arrows are manual (human) steps.
 
-## End-to-end system map
+## Components
+
+| Component | Port | Code | State |
+| --- | --- | --- | --- |
+| NovaMart storefront | 3100 | `shopping/frontend` | browser localStorage (cart) |
+| NovaMart API | 8100 | `shopping/backend/app` | JSON file: orders, sold stock, **checkout attempts** |
+| NovaConnect web | 3200 | `message-platform/frontend` | |
+| NovaConnect API | 8200 | `message-platform/backend/app` | SQLite: messages, **confirmations** |
+| OpsRelay uptime API + monitor | 8300 | `admin-dashboard/backend/uptime` | Atlas `uptime_*`, or SQLite locally |
+| OpsRelay dashboard | 3300 | `admin-dashboard/web` | reads the uptime API |
+| Agent worker | | `agents/orchestrator.py` | Atlas `incidents`, `workflow_steps`, `memories` |
+| Recovery worker | | `agents/recovery.py` | Atlas `checkout_recoveries` |
+
+`./dev.sh` starts all of them. The agent and recovery workers need `MONGODB_URI` (Atlas); the
+recovery worker runs in a restart loop, so a crash resumes under a new worker ID.
+
+## End-to-end map
 
 ```mermaid
 flowchart LR
-    shopper[Shopper] --> browser[Browser]
+    shopper[Shopper] --> store["NovaMart API :8100"]
+    store -->|1 begin attempt by checkout_id| attempts[("checkout attempts")]
+    store -->|2 save order, attempt=order_saved| orders[("orders")]
+    store -->|3 POST /api/confirmations cnf-checkout_id| connect["NovaConnect API :8200"]
+    connect --> confirmations[("confirmations: unique confirmation_id and checkout_id")]
 
-    subgraph novamart["NovaMart demo application"]
-        browser -->|pages and interactions| next["Next.js storefront :3100"]
-        browser -->|cart, promo, shipping| local["Browser localStorage"]
-        local --> browser
-        next -->|server-rendered fetches| api["FastAPI :8100"]
-        browser -->|client /api requests| rewrite["Next.js /api rewrite"]
-        rewrite --> api
-        api --> catalog["In-code product catalog"]
-        api --> checkout["CheckoutService: pricing, promotions, inventory"]
-        checkout --> store["Local JSON: orders and sold stock"]
-        api -->|health and checkout probe| health["Health endpoints"]
-        api -->|request IDs and JSON logs| logs["Runtime logs"]
-        checkout -->|quote, simulated order| api
-    end
+    monitor["Uptime monitor :8300"] -->|availability + functional probe| store
+    monitor -->|probe incl. checkout_completes| store
+    monitor --> uptime[("Atlas uptime_incidents")]
+    uptime --> intake["Agent intake"]
+    intake --> agent["Agent worker: evidence, diagnosis, verified patch"]
+    agent -->|records + logs by checkout_id and request_id| store
+    agent --> connect
+    agent <-->|similar incidents| memories[("Atlas memories + Vector Search")]
+    agent -->|draft PR| github["GitHub"]
+    github -.->|human review and merge| merged["Fix on main"]
+    merged -.->|"Fix merged" on dashboard| store
 
-    subgraph ci["GitHub CI and failure detection"]
-        source["Code pushed to main"] -.->|workflow template must be copied to .github/workflows| actions["GitHub Actions shopping-ci"]
-        actions --> tests["Backend pytest and checkout probe; frontend typecheck and build"]
-        tests --> artifacts["JUnit, OpsRelay report, probe JSON artifacts"]
-        actions -->|failed completed run on main| monitor["FailureMonitor polls Actions"]
-        monitor --> context["GitHubClient: failed jobs, logs, commit context"]
-    end
-
-    subgraph ops["OpsRelay CI incident worker"]
-        context --> adapter["MonitorAdapter: FailedRun"]
-        adapter --> ingest["Ingest and deduplicate incident"]
-        ingest --> mongo[("MongoDB: incidents, workflow_steps, memories")]
-        mongo --> worker["Orchestrator: lease, resume, stage machine"]
-        worker --> memory["Find similar fixes"]
-        memory <--> mongo
-        memory -.->|optional embeddings| voyage["Voyage AI"]
-        memory --> repair["Repairer and repair_ci_failure"]
-        repair --> verify["git archive temp copies; baseline and candidate pytest"]
-        verify --> diagnosis["Grounded investigation and patch proposals"]
-        diagnosis <--> openai["OpenAI structured model"]
-        diagnosis --> verify
-        verify -->|verified patch or needs_review| worker
-        worker -->|save PR intent before send| mongo
-        worker -.->|missing open_draft_pr adapter| publisher["Standalone PullRequestPublisher"]
-        publisher -->|branch, commit, PR; read-back verification| github["GitHub repository and pull requests"]
-        github --> reviewer["Human reviews and merges"]
-        worker -->|after PR confirmation| memory
-    end
-
-    subgraph live["Separate live-check path"]
-        livecli["One-shot live-check CLI or caller"] --> probe["Health + send/read-back delivery probe"]
-        probe -.->|Messaging endpoint contract; service not present| messaging["Messaging service placeholder"]
-        probe -.->|caller supplies failed check| route["diagnose_live_failure"]
-        route -->|unreachable or unhealthy| human["Service-health investigation / needs_review"]
-        route -->|reachable, delivery failed, code bug reproduced| repair
-        route -.->|caller invokes after deployment| fresh["confirm_recovery: fresh probe ID"]
-    end
-
-    logs -.->|caller supplies service logs| route
-    artifacts -.->|available for analysis; worker currently uses job logs| context
+    uptime -->|recovery_phase=recovering| recovery["Recovery worker"]
+    recovery <--> recoveries[("Atlas checkout_recoveries")]
+    recovery -->|read attempt and order, resend confirmation only| store
+    recovery -->|look up by confirmation_id| connect
+    recoveries --> dashboard["Dashboard :3300"]
+    uptime --> dashboard
 ```
 
-## CI incident flow and durable state
+## 1. Checkout with a stable checkout ID
 
-```mermaid
-flowchart TD
-    A["Failed shopping-ci run on main"] --> B["Poll run and fetch failed job logs"]
-    B --> C["MongoDB upsert: repo + run ID + attempt"]
-    C --> D["Claim lease; resume from last completed stage"]
-    D --> E["Retrieve same-app incident memories"]
-    E --> F["Reproduce failing pytest tests twice at failed commit"]
-    F --> G{Stable failure?}
-    G -->|No| review["needs_review"]
-    G -->|Yes| H["OpenAI investigation grounded in logs, traceback, source and diff"]
-    H --> I["Generate scoped candidate patches"]
-    I --> J["Apply each to a fresh git archive copy; rerun failing tests and full suite"]
-    J --> K{Passing candidate?}
-    K -->|More rounds left| I
-    K -->|No candidate passes| review
-    K -->|Yes; choose smallest| L["Persist verified patch"]
-    L --> M["Persist deterministic branch and PR intent"]
-    M -.-> N["Create or adopt PR; verify on GitHub"]
-    N --> O["Save fix as memory; incident awaits human merge"]
-    O --> P["Human review and merge"]
-    D -->|stop request or repeated failure| review
-```
+The storefront (and `uptime/demo_traffic.py`) sends one `checkout_id` per cart and reuses it on
+retry. The ID comes from the request body, then the `Idempotency-Key` header, then a generated
+`chk_<hex>`. It is carried through the attempt record, the order (`order.checkout_id`), the
+confirmation (`confirmation_id = cnf-<checkout_id>`) and every structured log line
+(`checkout_started`, `order_saved`, `confirmation_unavailable`, `confirmation_sent`,
+`checkout_failed`, `checkout_succeeded`). NovaMart forwards `X-Request-ID` to NovaConnect, so
+the logs of both services correlate by request ID.
 
-The dashed PR edge is the current integration boundary. `Orchestrator._build_real()` requires `GitHubClient.open_draft_pr`, which `GitHubClient` does not provide. The orchestrator also calls `find_pr(repo, branch)`, while `GitHubClient.find_pr()` accepts a branch and optional state. `PullRequestPublisher.create_or_find_pr()` implements the GitHub side separately, including idempotent branch/commit/PR creation and verification. Its current `create_pr()` call opens a regular PR, although the orchestrator contract says draft PR. The fake GitHub demo exercises the orchestrator's complete stage sequence.
+`shopping/backend/app/store.py` records an attempt **before** anything else, so attempts that fail
+before an order exists are still findable. Attempt states: `started`, `order_saved`,
+`order_failed`, `rejected`, `completed`, `failed`. A retry with a different cart under the same
+checkout ID is rejected (`409 CHECKOUT_ID_CONFLICT`). An order and its attempt state are written
+in one transaction; the store refuses a second order for a checkout ID.
 
-## Live service check flow
+NovaConnect (`message-platform/backend/app/confirmations.py`) enforces unique `confirmation_id`
+and unique `checkout_id` in application code. A replay returns the stored record
+(`Idempotent-Replay: true`); different details under the same ID are a conflict. A confirmation is
+`accepted` until it is `delivered`; an acknowledgement alone is not delivery.
 
-```mermaid
-flowchart TD
-    A["Caller runs one-shot live check"] --> B["GET configured health path"]
-    B --> C{Health response?}
-    C -->|No response or unhealthy| D["service_health: deployment, process and network checks"]
-    C -->|Healthy| E["Send unique probe ID to dedicated inbox"]
-    E --> F["Read back inbox until matching ID arrives or timeout"]
-    F -->|Delivered| G["Healthy"]
-    F -->|Missing or invalid| H["Caller supplies probe, deployed SHA, logs and source"]
-    H --> I["Grounded live diagnosis"]
-    I -->|Non-code cause or no reproduction| J["needs_review with next diagnostic"]
-    I -->|Code bug reproduced by app pytest suite| K["Run CI repair pipeline"]
-    K -->|Verified patch| L["pending_deploy"]
-    L -.->|caller deploys then invokes| M["confirm_recovery: fresh probe ID"]
-    M -->|Delivered| N["Recovered"]
-    M -->|Still missing| J
-```
+Endpoints used for recovery: NovaMart `GET /api/checkouts?since&until&unfinished`,
+`GET /api/checkouts/{id}`, `POST /api/checkouts/{id}/confirmation` (resends only the
+confirmation), `PUT /api/checkouts/{id}/reconciliation`; NovaConnect
+`GET /api/confirmations/{id}` and `GET /api/confirmations?order_id=`.
 
-The configured Messaging probe uses `GET /health`, `POST /probe/messages`, and `GET /probe/inbox/{inbox}` by default. The service implementation has not landed; the contract is exercised against a local fixture. This live path is a callable library and CLI, not a scheduled worker.
+## 2. Detection
 
-## Current boundaries and deployment notes
+NovaMart's functional probe (`shopping/backend/app/probe.py`) runs check 9,
+`checkout_completes`: a synthetic checkout against a throwaway store using the real NovaConnect
+client. On failure it reports the checkout ID, request ID, error code, HTTP status, whether the
+order was saved, the order ID, the confirmation status and elapsed time. The probe also reports
+`interrupted_checkouts` (unfinished customer attempts in the last 24 h).
 
-| Area | Current code |
+The uptime monitor turns a failing probe into an incident in `uptime_incidents`. Homepages still
+pass, so the route is `investigate`, not `service_health`. CI status is extra evidence when
+GitHub is configured.
+
+## 3. Agent investigation
+
+`agents/live_repair.py` calls `agents/checkout_evidence.py` for NovaMart incidents whose failing
+check is `checkout_completes`. It gathers:
+
+- the failed probe's checkout and request IDs, and its order and confirmation status;
+- NovaMart's unfinished attempts around the incident, each looked up in NovaConnect by its
+  confirmation ID;
+- log lines from both services (`OPSRELAY_SHOPPING_LOG_FILE`, `OPSRELAY_MESSAGING_LOG_FILE`,
+  default `.dev/logs/*-api.log`) that mention those IDs;
+- recent commits that touched the file named by the probe's source hint;
+- CI status, and similar past incidents from Atlas Vector Search (passed in by the orchestrator).
+
+It states the **failure point** (e.g. "after NovaMart saved order X: the confirmation request to
+NovaConnect ended with timeout after 3000 ms, and checkout returned 504"). A timeout alone leaves
+the **cause** `unknown`. The result carries one `recommendation`:
+
+| Action | When |
 | --- | --- |
-| Shopping runtime | Implemented. Next.js serves pages, FastAPI owns prices and stock, and `DemoStore` persists simulated orders in a local JSON file. No payment is charged. |
-| CI workflow | `shopping/ci/shopping-ci.yml` is a template. There is no root `.github/workflows/shopping-ci.yml` in this checkout, so GitHub will not discover it until copied. |
-| CI monitor | Implemented for failed, completed runs on the configured base branch. It ignores `agent/` fix branches. The worker consumes failed job logs; uploaded diagnostic artifacts are not downloaded by that path. |
-| Repair | Implemented as a callable pipeline. The verifier exports the failed commit into temporary directories and runs pytest there. Unreproducible or unverified results go to `needs_review`. |
-| Durable workflow | MongoDB stores incidents, leases, stage/audit records and fix memories. Atlas Vector Search is attempted for similarity, with local cosine fallback; embeddings use Voyage when configured, otherwise a local hash. |
-| PR publication | The standalone publisher is implemented; the real orchestrator-to-publisher adapter is missing. It currently opens a regular PR, while the orchestrator expects a draft. Human merge is required. |
-| Live checks | One-shot CLI and diagnosis/recovery functions are implemented, but no scheduled live polling worker is wired. Messaging endpoints are a contract tested by a local fixture; `message-platform/` contains only a placeholder. |
-| Admin dashboard | `admin-dashboard/` contains only a placeholder; there is no UI for the incident state yet. |
+| `propose_code_fix` | The diagnosis is a code bug, the agent reproduced it (existing suite or a new regression test fails at the deployed commit) and the patch passes the tests. |
+| `operational_step` | A dependency timed out and no recent commit touched the hinted code, so no model call or code change is made; or a service-health / provider outage. |
+| `ask_for_review` | Anything else: the evidence does not support one action. |
+
+The prompt and the incident record contain only what the services recorded. The demo's injected
+fault, the expected diagnosis and the expected patch are not in either; a test asserts the
+evidence text never names them.
+
+A verified patch follows the existing workflow: save the PR intent in Atlas, open a **draft PR**,
+and wait. A human reviews and merges. The agent never merges.
+
+## 4. Fix, then reconcile interrupted checkouts
+
+```mermaid
+stateDiagram-v2
+    [*] --> Outage: checkout probe fails
+    Outage --> Recovering: fresh checkout passes and checkouts were interrupted
+    Outage --> Resolved: fresh checkout passes, nothing interrupted
+    Recovering --> Outage: probe fails again (relapsed, same incident)
+    Recovering --> Resolved: every attempt has a verified final outcome
+```
+
+When a fresh checkout passes, the monitor marks the service **Operational** but keeps the incident
+open with `recovery_phase = "recovering"` ("Recovering interrupted checkouts"). Service health and
+incident recovery are separate statuses on the dashboard.
+
+The recovery worker (`agents/recovery.py`) polls recovering incidents, takes a lease on the
+incident's `checkout_recoveries` document (fenced writes, like the orchestrator) and collects the
+affected attempts from NovaMart (incident start minus 5 minutes, up to the moment the service
+recovered). For each one it reads the authoritative records:
+
+| Records found | Outcome |
+| --- | --- |
+| Order exists, NovaConnect confirmation `delivered` | `completed` |
+| Order exists, NovaConnect confirms no confirmation | save retry intent, resend **only** the confirmation (same `cnf-<checkout_id>`), read it back from NovaConnect; `completed` once read back as delivered |
+| Resend acknowledged, delivery still pending | `awaiting_delivery` (not final) |
+| Order confirmed absent | `failed`, and NovaMart shows the customer can retry with the same checkout ID |
+| A lookup timed out, or the records conflict | `needs_review`, with the missing evidence listed; retried on the next pass |
+
+Each final outcome is written back to NovaMart (`reconciliation` on the attempt). When every
+attempt is final, the recovery phase is `complete`, the worker links the fresh checkout to the
+agent's incident as `deployed_fix_verified`, and the monitor resolves the uptime incident. Attempts
+that need review keep the incident open and visible.
+
+### Crash safety
+
+Atlas holds the incident ID, affected checkout IDs, each attempt's evidence, the retry intent
+(saved **before** the resend) and the verified result. A one-shot demo fault
+(`python -m agents.recovery arm-crash`, file `.dev/recovery-fault.json`) makes the worker exit
+after NovaConnect records the confirmation and before OpsRelay saves the result. On restart a new
+worker takes the expired lease on the same incident, sees the saved intent, looks the confirmation
+up by its stable ID instead of resending, and finishes the attempt. The dashboard then shows the
+same incident ID, both worker IDs and exactly one confirmation for the order.
+
+## Demo controls
+
+The dashboard's outage controls (`admin-dashboard/backend/uptime/api.py`):
+
+- **Bad deploy, scenario 4 "Checkout errors, orders still placed"** pushes a commit to `main`
+  ("Simplify checkout error handling") and turns on NovaConnect's controlled confirmation delay.
+  Nothing in the incident names either.
+- **Send 4 customer checkouts** (`POST /api/v1/demo/checkouts`) places real checkouts that become
+  the interrupted attempts.
+- **Fix merged** applies the merged fix to the running NovaMart and asks for a fresh check. It
+  leaves the NovaConnect delay running; **Restore NovaConnect** ends it (the operational step).
+
+The NovaConnect delay (`opsrelay-outage.json`, scenario `confirmation_timeout`) alternates between
+dropping a request after the delay and recording it but answering late, so both "confirmation
+missing" and "response lost" attempts occur.
+
+## Durable state in Atlas
+
+| Collection | Owner | Holds |
+| --- | --- | --- |
+| `uptime_incidents`, `uptime_*` | uptime monitor | incidents, checks, service state, recovery phase |
+| `incidents`, `workflow_steps` | agent orchestrator | repair stage machine, PR intent, recommendation, audit trail |
+| `memories` | agent orchestrator | past fixes for Vector Search |
+| `checkout_recoveries` | recovery worker | per-incident attempts, evidence, retry intent, verified results, workers, events |
 
 ## Code map
 
-- Storefront: `shopping/frontend/src/app`, `shopping/frontend/src/lib/api.ts`, `shopping/frontend/src/lib/cart.tsx`, `shopping/frontend/next.config.ts`
-- Shopping API and state: `shopping/backend/app/main.py`, `shopping/backend/app/checkout.py`, `shopping/backend/app/store.py`, `shopping/backend/app/probe.py`
-- CI template and diagnostics: `shopping/ci/shopping-ci.yml`, `shopping/backend/tests/conftest.py`
-- Detection and context: `agents/monitor.py`, `agents/github_client.py`, `agents/orchestrator.py` (`MonitorAdapter`)
-- Diagnosis and verification: `agents/pipeline.py`, `agents/investigator.py`, `agents/patcher.py`, `agents/verifier.py`
-- Durable state and memory: `agents/mongodb.py`, `agents/memory.py`, `agents/orchestrator.py`
-- PR publication: `agents/github_publisher.py`, `agents/github_client.py`
-- Live path: `agents/live_check.py`, `agents/live_incident.py`, `agents/services.toml`
+- Checkout and attempts: `shopping/backend/app/checkout.py`, `store.py`, `confirmations.py`, `probe.py`, `main.py`
+- Confirmations: `message-platform/backend/app/confirmations.py`, `db.py`, `main.py`, `demo_outage.py`
+- Monitor and incident phases: `admin-dashboard/backend/uptime/incidents.py`, `probes.py`, `storage/mongo.py`
+- Demo controls: `admin-dashboard/backend/uptime/bad_deploys.py`, `demo_outages.py`, `demo_traffic.py`
+- Agent evidence and recommendation: `agents/checkout_evidence.py`, `agents/live_repair.py`, `agents/orchestrator.py`
+- Recovery: `agents/recovery.py`, `agents/mongodb.py`
+- Dashboard: `admin-dashboard/web/src/components/recovery.tsx`, `src/app/incidents/[id]/page.tsx`
+- Tests: `agents/tests/test_checkout_recovery.py` (the five scenarios), `agents/tests/test_checkout_investigation.py`,
+  `shopping/backend/tests/test_checkout_confirmation.py`, `message-platform/backend/tests/test_confirmations.py`,
+  `admin-dashboard/backend/tests/test_incident_recovery_phase.py`

@@ -5,7 +5,7 @@ import { use, useState } from "react";
 import { ArrowLeft, CheckCircle2, FlaskConical, Globe, Server, Settings2, XCircle } from "lucide-react";
 import { LatencyChart, StatusLegend, UptimeBars } from "@/components/charts";
 import { IncidentRow } from "@/components/incidents";
-import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
+import { Badge, ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
 import { UptimeFigure, uptimeBasis } from "@/components/uptime";
 import { type Bar, type Check, type LatencyPoint, type Probe, type ServiceDetail, type UptimeStats, type Window, usePoll } from "@/lib/api";
 import { FAILURE_LABELS, STATUS_META, ago, clock, duration, ms, useNow } from "@/lib/format";
@@ -38,10 +38,10 @@ function FunctionalResult({ check }: { check: Check | undefined }) {
       {failures.length > 0 && (
         <ul className="mt-4 space-y-3">
           {failures.map((x) => (
-            <li key={x.check} className="rounded-xl border border-crit/25 bg-crit/5 p-3.5 text-sm">
+            <li key={x.check} className="rounded-lg border border-crit/25 bg-crit/5 p-3.5 text-sm">
               <p className="flex flex-wrap items-center gap-2 font-medium">
                 <span className="font-mono text-[13px]">{x.check}</span>
-                {x.component && <span className="rounded-md bg-raised px-1.5 py-0.5 text-[11px] text-muted">{x.component}</span>}
+                {x.component && <Badge tone="neutral">{x.component}</Badge>}
               </p>
               <p className="mt-1 text-muted">{x.reason}</p>
               {x.source && <p className="mt-1.5 font-mono text-[11.5px] text-accent">{x.source}</p>}
@@ -106,7 +106,7 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
               <StatusIcon status={d.current.status} className="h-8 w-8" />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-2xl font-semibold tracking-tight">{d.service.name}</h1>
+                  <h1 className="text-xl font-semibold tracking-tight">{d.service.name}</h1>
                   <StatusPill status={d.current.status} />
                 </div>
                 <p className="mt-1 text-sm text-muted">{d.service.description}</p>
@@ -182,7 +182,7 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
                         {clock(c.checked_at, true)}
                         {!c.scheduled && <span className="ml-1.5 rounded bg-raised px-1 text-[10px] text-faint">manual</span>}
                       </td>
-                      <td className="py-2.5 pr-4"><StatusPill status={c.status} size="sm" /></td>
+                      <td className="py-2.5 pr-4"><StatusPill status={c.status} /></td>
                       <td className="py-2.5 pr-4"><ProbeCell probe={c.frontend} redact={c.functional?.details.demo_outage} /></td>
                       <td className="py-2.5 pr-4"><ProbeCell probe={c.availability} redact={c.functional?.details.demo_outage} /></td>
                       <td className="py-2.5 pr-4"><ProbeCell probe={c.functional} redact={c.functional?.details.demo_outage} /></td>

@@ -92,3 +92,21 @@ class PaymentUnavailableError(NovaMartError):
     status_code = 503
     code = "PAYMENT_UNAVAILABLE"
     component = "checkout"
+
+
+class CheckoutConflictError(NovaMartError):
+    status_code = 409
+    code = "CHECKOUT_ID_CONFLICT"
+    component = "checkout"
+
+
+class ConfirmationUnavailableError(NovaMartError):
+    status_code = 504
+    code = "CONFIRMATION_UNAVAILABLE"
+    component = "confirmations"
+
+
+class CheckoutNotFoundError(NovaMartError):
+    status_code = 404
+    code = "CHECKOUT_NOT_FOUND"
+    component = "checkout"

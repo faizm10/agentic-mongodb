@@ -1,5 +1,7 @@
 """Inventory validation: never sell more than we have."""
 
+import json
+
 import pytest
 
 from app import inventory
@@ -81,7 +83,9 @@ def test_checkout_rejects_oversell_and_leaves_stock_untouched(client, checkout_p
     assert body["error"]["details"]["shortages"][0]["available"] == 3
     product = client.get(f"/api/products/{POLAR_CAMERA}").json()
     assert product["available"] == 3
-    assert not (data_dir / "novamart-store.json").exists(), "a rejected checkout must not write to the store"
+    on_disk = json.loads((data_dir / "novamart-store.json").read_text())
+    assert on_disk["orders"] == [] and on_disk["sold"] == {}, "a rejected checkout must not create an order or sell stock"
+    assert [a["state"] for a in on_disk["checkouts"].values()] == ["rejected"], "the attempt is kept as rejected"
 
 
 def test_checkout_rejects_sold_out_product(client, checkout_payload):

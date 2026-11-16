@@ -4,41 +4,45 @@ import Link from "next/link";
 import { useState } from "react";
 import { Activity, ChevronRight, Clock3, Cpu, Database, Timer } from "lucide-react";
 import { IncidentTimeline } from "@/components/incidents";
-import { OutageControls } from "@/components/outage-controls";
-import { AgentActivityPanel } from "@/components/agent-activity";
-import { DependenciesPanel } from "@/components/dependencies";
-import { LearningPanel } from "@/components/learning";
 import { StatusLegend, UptimeBars } from "@/components/charts";
 import { UptimeFigure, uptimeBasis } from "@/components/uptime";
-import { ErrorPanel, Shell, Skeleton, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
+import { ErrorPanel, PageHeader, Shell, Skeleton, StatusIcon, StatusPill, WindowTabs } from "@/components/ui";
 import { type ServiceOverview, type Summary, type Window, usePoll } from "@/lib/api";
 import { STATUS_META, ago, duration, ms, useNow } from "@/lib/format";
 
 const BANNER: Record<string, string> = {
-  operational: "from-ok/15 border-ok/25",
-  degraded: "from-warn/15 border-warn/30",
-  down: "from-crit/20 border-crit/35",
-  unknown: "from-white/5 border-line-strong",
+  operational: "border-ok/25 bg-ok/[0.06]",
+  degraded: "border-warn/30 bg-warn/[0.06]",
+  down: "border-crit/35 bg-crit/[0.08]",
+  unknown: "border-line-strong bg-surface",
 };
+
+function Kpi({ href, label, value, sub }: { href?: string; label: string; value: React.ReactNode; sub: string }) {
+  const body = (
+    <>
+      <p className="label">{label}</p>
+      <p className="tabular mt-1.5 text-2xl font-semibold tracking-tight">{value}</p>
+      <p className="mt-0.5 truncate text-xs text-muted">{sub}</p>
+    </>
+  );
+  return href ? <Link href={href} className="panel block p-4 transition hover:border-line-strong">{body}</Link> : <div className="panel p-4">{body}</div>;
+}
 
 function ServiceCard({ s, window }: { s: ServiceOverview; window: Window }) {
   const now = useNow();
   const up = s.uptime;
   return (
-    <article className="panel group animate-rise p-5 transition hover:border-line-strong sm:p-6">
+    <article className="panel animate-rise p-5 sm:p-6">
       <div className="flex flex-wrap items-start gap-3">
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2.5">
             <StatusIcon status={s.current.status} className="h-5 w-5" />
             <h3 className="text-base font-semibold tracking-tight">{s.name}</h3>
-            <StatusPill status={s.current.status} size="sm" />
+            <StatusPill status={s.current.status} />
           </div>
           <p className="mt-1 text-sm text-muted">{s.description}</p>
         </div>
-        <Link
-          href={`/services/${s.id}`}
-          className="inline-flex items-center gap-1 rounded-lg border border-line px-2.5 py-1.5 text-xs font-medium text-muted transition hover:border-line-strong hover:text-ink"
-        >
+        <Link href={`/services/${s.id}`} className="btn">
           Details <ChevronRight className="h-3.5 w-3.5" />
         </Link>
       </div>
@@ -104,7 +108,7 @@ function MonitoringPanel({ m }: { m: Summary["monitoring"] }) {
         ))}
       </dl>
       {!m.storage.atlas && (
-        <p className="mt-4 rounded-xl border border-warn/25 bg-warn/5 p-3 text-xs leading-relaxed text-warn">
+        <p className="mt-4 rounded-lg border border-warn/25 bg-warn/5 p-3 text-xs leading-relaxed text-warn">
           History is stored locally for development ({m.storage.backend}). Set MONGODB_URI to persist it in MongoDB Atlas.
         </p>
       )}
@@ -132,35 +136,33 @@ export default function Overview() {
         </div>
       ) : (
         <div className="space-y-8">
-          <section
-            className={`relative overflow-hidden rounded-3xl border bg-gradient-to-br to-transparent p-6 sm:p-8 ${BANNER[data.overall.status]}`}
-            aria-live="polite"
-          >
+          <PageHeader title="Overview" sub={`${data.services.length} services monitored · checked every ${data.monitoring.interval_seconds}s`} />
+          <section className={`rounded-xl border p-5 sm:p-6 ${BANNER[data.overall.status]}`} aria-live="polite">
             <div className="flex flex-wrap items-center gap-4">
-              <StatusIcon status={data.overall.status} className="h-9 w-9" />
+              <StatusIcon status={data.overall.status} className="h-8 w-8" />
               <div className="min-w-0 flex-1">
-                <h1 className="text-2xl font-semibold tracking-tight sm:text-[28px]">{data.overall.label}</h1>
-                <p className="mt-1 text-sm text-muted">
-                  {data.overall.affected_services.length
-                    ? `Affected: ${data.overall.affected_services.join(", ")}`
-                    : `${data.services.length} services monitored`}
-                  {" · "}checked every {data.monitoring.interval_seconds}s
+                <p className="text-lg font-semibold tracking-tight">{data.overall.label}</p>
+                <p className="mt-0.5 text-sm text-muted">
+                  {data.overall.affected_services.length ? `Affected: ${data.overall.affected_services.join(", ")}` : "All checks passing"}
                   {data.monitoring.worker?.last_cycle_started_at && ` · last check ${ago(data.monitoring.worker.last_cycle_started_at, now)}`}
                 </p>
               </div>
             </div>
           </section>
 
-          <OutageControls services={data.services} onChange={reload} />
-
-          <AgentActivityPanel activity={data.agent_activity} onChange={reload} />
-
-          <DependenciesPanel />
-
-          <LearningPanel />
+          <div className="grid grid-cols-2 gap-4 lg:grid-cols-4">
+            <Kpi href="/incidents" label="Active incidents" value={data.active_incidents.length}
+              sub={data.active_incidents.some((i) => i.recovery_phase) ? "Recovering interrupted checkouts" : `${data.recent_incidents.length} recently resolved`} />
+            <Kpi href="/ai-agent" label="AI agent" value={data.agent_activity.length}
+              sub={`${data.agent_activity.filter((a) => a.state === "working" || a.state === "waiting").length} in progress`} />
+            <Kpi label="Services operational"
+              value={`${data.services.filter((x) => x.current.status === "operational").length}/${data.services.length}`} sub="right now" />
+            <Kpi label="Checks recorded" value={data.monitoring.total_checks.toLocaleString()}
+              sub={data.monitoring.status === "running" ? "Monitor running" : "Monitor not running"} />
+          </div>
 
           <div className="flex flex-wrap items-center justify-between gap-3">
-            <h2 className="text-sm font-semibold text-muted">Services</h2>
+            <h2 className="text-sm font-semibold">Services</h2>
             <div className="flex flex-wrap items-center gap-4">
               <span className="hidden md:block">
                 <StatusLegend />

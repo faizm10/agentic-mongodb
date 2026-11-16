@@ -96,6 +96,23 @@ def probe_text(failures: list[dict]) -> str:
 
 
 def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dict]) -> dict:
+    """The repair result plus one ``recommendation`` (see ``checkout_evidence.recommend``)."""
+    from . import checkout_evidence
+
+    app = load_app_config(failed_run["app"])
+    live = failed_run.get("live") or {}
+    sha = failed_run["commit_sha"]
+    evidence = None
+    if app.name == "shopping" and re.fullmatch(r"[0-9a-fA-F]{7,40}", sha):
+        evidence = checkout_evidence.collect(live, changed_in=lambda path: _commits_touching(repairer, sha, path))
+    out = _repair_live(repairer, failed_run, similar, evidence)
+    rec = checkout_evidence.recommend(evidence, out, operational=out.pop("_operational", False))
+    out["recommendation"] = rec
+    out["investigation"] = (out.get("investigation") or "") + checkout_evidence.recommendation_markdown(rec)
+    return out
+
+
+def _repair_live(repairer: Repairer, failed_run: dict, similar: list[dict], evidence) -> dict:
     from .live_incident import LiveIncident, diagnose_live_failure
 
     app = load_app_config(failed_run["app"])
@@ -108,15 +125,22 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
     if live.get("investigation_route") == "service_health":
         reason = (f"{title}: {live.get('failure_type') or 'service unhealthy'} is a service health problem "
                   f"(process, deployment or network), not a code bug, so no code change was attempted")
-        return _needs_review(reason, live.get("summary") or reason,
-                             _markdown(live, reason, None, SERVICE_HEALTH_STEPS))
+        return {**_needs_review(reason, live.get("summary") or reason,
+                                _markdown(live, reason, None, SERVICE_HEALTH_STEPS)), "_operational": True}
 
     failures = live.get("probe_failures") or []
     if failures and all(str(f.get("source") or "").startswith("external:") for f in failures):
         external = sorted({str(f["source"]).removeprefix("external:").strip() for f in failures})
         reason = (f"{title}: the failing check is a third-party dependency ({', '.join(external)}), "
                   f"not {app.name} code, so no code change was attempted")
-        return _needs_review(reason, f"{', '.join(external)} outage", _markdown(live, reason, None, PROVIDER_STEPS))
+        return {**_needs_review(reason, f"{', '.join(external)} outage",
+                                _markdown(live, reason, None, PROVIDER_STEPS)), "_operational": True}
+
+    if evidence is not None and evidence.dependency_timed_out and not evidence.code_change_suspected:
+        reason = (f"{title}: {evidence.failure_point}. No recent commit changed {evidence.hinted_file}, "
+                  "so no code change was attempted")
+        markdown = _markdown(live, reason, None, []) + "\n".join(evidence.markdown())
+        return _needs_review(reason, evidence.cause, markdown)
 
     source_files = repairer._source_files(sha, app)
     if os.environ.get("OPSRELAY_DEMO_FAST_FIX", "1") != "0":
@@ -133,13 +157,15 @@ def repair_live_incident(repairer: Repairer, failed_run: dict, similar: list[dic
         ci_status=live.get("ci_status") or "unknown",
         probe_details=probe_text(live.get("probe_failures") or []),
         test_examples=_test_examples(repairer, sha, app, live),
-        service_logs=live.get("service_logs") or "",
+        service_logs="\n\n".join(t for t in [evidence.text() if evidence else "", live.get("service_logs") or ""] if t),
     )
     result = diagnose_live_failure(incident, repairer.llm)
     repair: RepairResult | None = result.repair
     actions = (APPROVAL_STEPS if result.outcome == "verified" else
                [a for a in [result.next_diagnostic, *result.recommended_actions] if a])
     markdown = _markdown(live, result.reason, result, actions)
+    if evidence is not None:
+        markdown += "\n".join(evidence.markdown())
     if result.outcome != "verified" or repair is None or repair.outcome != "verified":
         next_step = f" Next: {result.next_diagnostic}" if result.next_diagnostic else ""
         return _needs_review(result.reason + next_step, result.likely_cause, markdown,
@@ -225,6 +251,12 @@ def _prior(s: dict, i: int) -> PriorIncident:
     return PriorIncident(id=str(s.get("memory_id") or s.get("id") or i), summary=s.get("summary") or "",
                          root_cause=s.get("root_cause"), fix_summary=s.get("fix_summary"),
                          similarity=s.get("score"))
+
+
+def _commits_touching(repairer: Repairer, sha: str, path: str) -> list[str]:
+    """``<short sha> <subject>`` for recent commits that changed ``path``."""
+    log = repairer._git("log", f"-{RECENT_COMMITS}", "--format=%h %s", sha, "--", path, default="") or ""
+    return [line for line in log.splitlines() if line.strip()]
 
 
 def _recent_diff(repairer: Repairer, sha: str, app) -> str:

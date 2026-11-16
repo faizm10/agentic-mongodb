@@ -25,6 +25,15 @@ class SendMessageIn(BaseModel):
     reply_to_id: str | None = Field(default=None, max_length=64)
 
 
+class ConfirmationIn(BaseModel):
+    confirmation_id: str = Field(pattern=r"^cnf-[A-Za-z0-9_-]{8,64}$")
+    checkout_id: str = Field(pattern=r"^[A-Za-z0-9_-]{8,64}$")
+    order_id: str = Field(min_length=1, max_length=64)
+    recipient: str = Field(min_length=3, max_length=254)
+    body: str = Field(min_length=1, max_length=2000)
+    probe: bool = False
+
+
 class EditMessageIn(BaseModel):
     body: str = Field(max_length=8000)
 

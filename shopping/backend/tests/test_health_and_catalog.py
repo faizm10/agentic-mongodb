@@ -31,6 +31,7 @@ def test_checkout_probe_is_healthy(client):
         "product_images",
         "stock_levels",
         "order_store_access",
+        "checkout_completes",
         "probe_has_no_side_effects",
     }
 
