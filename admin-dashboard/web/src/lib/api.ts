@@ -57,6 +57,54 @@ export type Current = {
 export type ServiceOverview = { id: string; name: string; app: string; description: string; current: Current; uptime: UptimeStats; bars: Bar[] | null };
 
 export type IncidentEvent = { at: string; type: string; status: Status | null; message: string; check_id: string | null };
+
+export type RecoveryOutcome = "pending" | "awaiting_delivery" | "needs_review" | "completed" | "failed";
+export type RecoveryAttempt = {
+  checkout_id: string;
+  order_id: string | null;
+  confirmation_id: string | null;
+  outcome: RecoveryOutcome;
+  final: boolean;
+  reason: string;
+  missing: string[];
+  state_at_discovery: string | null;
+  customer_saw: { status_code: number; error_code: string | null } | null;
+  order: { state: string | null; checked_at: string | null };
+  confirmation: { state: string | null; status: string | null; checked_at: string | null };
+  retried: boolean;
+  verified_result: { confirmation_id: string; delivered_at: string | null; confirmations_for_order: number | null; resent: boolean; found_after_restart: boolean } | null;
+};
+export type StepState = "waiting" | "running" | "done" | "failed" | "needs_review" | "skipped";
+export type WalkStep = {
+  key: string;
+  label: string;
+  state: StepState;
+  started_at: string | null;
+  ended_at: string | null;
+  duration_seconds: number | null;
+  summary: string;
+  details: Record<string, unknown>;
+};
+export type Walkthrough = {
+  incident_id: string;
+  title: string;
+  state: "open" | "resolved";
+  steps: WalkStep[];
+  health: { state: "on_track" | "slow" | "attention" | "done"; reason: string };
+};
+
+export type Recovery = {
+  phase: "collecting" | "reconciling" | "needs_review" | "complete";
+  counts: Record<string, number>;
+  workers: string[];
+  fresh_checkout: { check_id: string | null; at: string } | null;
+  completed_at: string | null;
+  fix_verification: { pr_url: string | null; fresh_checkout_at: string; interrupted_checkouts_settled: number } | null;
+  attempts: RecoveryAttempt[];
+  events: { at: string; worker_id: string; type: string; message: string; checkout_id?: string | null }[];
+};
+export type RecoveryStatus = "not_needed" | "waiting" | "reconciling" | "needs_review" | "complete";
+
 export type Incident = {
   id: string;
   service_id: string;
@@ -83,6 +131,11 @@ export type Incident = {
   acknowledged_at: string | null;
   acknowledged_by: string | null;
   related_ci: { id: string; status: string; stage: string; run_url: string | null; pr_url: string | null; commit_sha: string | null; created_at: string }[];
+  recovery_phase: "recovering" | null;
+  service_recovered_at: string | null;
+  service_health: Status;
+  recovery_status: RecoveryStatus;
+  recovery: Recovery | null;
 };
 
 export type Worker = {
