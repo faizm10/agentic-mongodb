@@ -11,24 +11,12 @@ from uptime.worker import UptimeMonitor, slot_for
 from .conftest import SERVICES, T0
 
 
-def test_default_interval_is_30_seconds_and_overridable(monkeypatch):
+def test_default_interval_is_5_minutes_and_overridable(monkeypatch):
     monkeypatch.delenv("OPSRELAY_MONITOR_INTERVAL", raising=False)
     settings = load_settings()
-    assert settings.interval_seconds == 30
-    assert {s.id for s in settings.services} == {"novamart", "novaconnect"}
-    assert all(s.interval_seconds == 30 for s in settings.services)
+    assert settings.interval_seconds == 300 and settings.services == []
     monkeypatch.setenv("OPSRELAY_MONITOR_INTERVAL", "2")
     assert load_settings().interval_seconds == 2
-
-
-def test_configured_endpoints_match_the_apps():
-    by_id = {s.id: s for s in load_settings().services}
-    assert by_id["novamart"].availability_url == "http://localhost:8100/api/health"
-    assert by_id["novamart"].functional_url == "http://localhost:8100/api/health/checkout"
-    assert by_id["novamart"].frontend_url == "http://localhost:3100"
-    assert by_id["novaconnect"].availability_url == "http://localhost:8200/health"
-    assert by_id["novaconnect"].functional_url == "http://localhost:8200/api/monitor/probe"
-    assert by_id["novaconnect"].frontend_url == "http://localhost:3200"
 
 
 def test_first_cycle_runs_immediately_then_every_30_seconds(storage, monitor_factory, clock):

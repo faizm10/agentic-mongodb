@@ -41,12 +41,13 @@ class Model(BaseModel):
 class ServiceConfig(Model):
     id: str = Field(pattern=r"^[a-z][a-z0-9-]{1,40}$")
     name: str
-    app: str = Field(description="Key used by the OpsRelay agents (agents/apps.toml): 'shopping' or 'messaging'.")
+    app: str = Field(default="", description="Key used by the OpsRelay agents (agents/apps.toml), if any.")
     description: str = ""
     frontend_url: str
-    backend_url: str
-    availability_path: str
-    functional_path: str
+    # A site added from the dashboard has only a page URL and, optionally, a health URL (backend_url, no path).
+    backend_url: str = ""
+    availability_path: str = ""
+    functional_path: str = ""
     functional_method: Literal["GET", "POST"] = "GET"
     interval_seconds: int = Field(default=30, ge=1, le=3600)
     timeout_seconds: float = Field(default=5.0, gt=0, le=60, description="Frontend + availability request timeout.")
@@ -60,12 +61,12 @@ class ServiceConfig(Model):
     workspace_id: str = Field(default="demo", description="The workspace that owns this service.")
 
     @property
-    def availability_url(self) -> str:
-        return self.backend_url.rstrip("/") + self.availability_path
+    def availability_url(self) -> str | None:
+        return self.backend_url.rstrip("/") + self.availability_path if self.backend_url else None
 
     @property
-    def functional_url(self) -> str:
-        return self.backend_url.rstrip("/") + self.functional_path
+    def functional_url(self) -> str | None:
+        return self.backend_url.rstrip("/") + self.functional_path if self.backend_url and self.functional_path else None
 
 
 class ProbeResult(Model):
