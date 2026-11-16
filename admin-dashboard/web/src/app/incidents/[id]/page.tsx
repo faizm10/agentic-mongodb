@@ -4,6 +4,7 @@ import Link from "next/link";
 import { use, useState } from "react";
 import { ArrowLeft, Bot, CheckCircle2, ChevronDown, ExternalLink, GitMerge, GitPullRequest, Workflow } from "lucide-react";
 import { RouteBadge } from "@/components/incidents";
+import { IncidentBadge, RecoveryPanel } from "@/components/recovery";
 import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill } from "@/components/ui";
 import { type Incident, isDemoIncident, usePoll } from "@/lib/api";
 import { FAILURE_LABELS, clock, duration, useNow } from "@/lib/format";
@@ -48,6 +49,8 @@ const EVENT_LABEL: Record<string, string> = {
   fix_confirmed: "Fix confirmed",
   fix_disputed: "Still broken after the fix",
   fix_merged: "Fix merged into main",
+  service_recovered: "Fresh checkout passed",
+  relapsed: "Failing again",
 };
 
 /** Lets a person say the fix is merged into main; the running app gets it and is checked again. */
@@ -106,8 +109,8 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
 
   return (
     <Shell meta={inc.meta} updatedAt={inc.updatedAt} error={Boolean(inc.error)}>
-      <Link href={i ? `/services/${i.service_id}` : "/"} className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink">
-        <ArrowLeft className="h-4 w-4" /> {i ? i.service_name : "Back"}
+      <Link href="/incidents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink">
+        <ArrowLeft className="h-4 w-4" /> Incidents
       </Link>
       {!i && inc.error ? (
         <ErrorPanel message={inc.error.message} onRetry={inc.reload} />
@@ -120,15 +123,19 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               <StatusIcon status={i.state === "open" ? i.severity : "operational"} className="h-8 w-8" />
               <div className="min-w-0 flex-1">
                 <p className="font-mono text-xs text-faint">{i.id}</p>
-                <h1 className="mt-1 text-2xl font-semibold tracking-tight">{i.title}</h1>
+                <h1 className="mt-1 text-xl font-semibold tracking-tight">{i.title}</h1>
                 <p className="mt-1 text-sm text-muted">{demo ? `Service status: ${i.state === "open" ? i.severity : "recovered"}.` : i.summary}</p>
                 <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className={`rounded-md px-2 py-0.5 text-xs font-semibold ${i.state === "open" ? "bg-crit/15 text-crit" : "bg-ok/10 text-ok"}`}>
-                    {i.state === "open" ? "Ongoing" : "Resolved"}
-                  </span>
-                  <StatusPill status={i.peak_severity} size="sm" />
+                  <span className="label">Incident</span>
+                  <IncidentBadge incident={i} />
+                  <StatusPill status={i.peak_severity} />
                   {!demo && <RouteBadge route={i.investigation_route} />}
                 </div>
+                <div className="mt-2 flex flex-wrap items-center gap-2">
+                  <span className="label">Service health now</span>
+                  <StatusPill status={i.service_health} />
+                </div>
+                <Link href={`/ai-agent/${encodeURIComponent(i.id)}`} className="btn mt-4">Agent walkthrough</Link>
               </div>
             </div>
             <div className="mt-6 grid grid-cols-2 gap-5 border-t border-line pt-5 md:grid-cols-4">
@@ -138,6 +145,8 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               <Stat label="Service" value={<span className="text-base">{i.service_name}</span>} sub={`agent app: ${i.app}`} />
             </div>
           </section>
+
+          {(i.recovery || i.recovery_phase) && <RecoveryPanel incident={i} />}
 
           <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
             <section className="panel p-6">
@@ -154,7 +163,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     {e.check_id && <p className="mt-1 font-mono text-[11px] text-faint">check {e.check_id}</p>}
                   </li>
                 ))}
-                {i.state === "open" && (
+                {i.state === "open" && !i.recovery_phase && (
                   <li className="relative">
                     <span className="absolute -left-[25px] top-1.5 h-2.5 w-2.5 animate-pulse rounded-full bg-crit" />
                     <p className="text-sm text-muted">Still failing · last failure {clock(i.last_failure_at, true)}</p>
@@ -202,7 +211,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                       </li>
                     ))}
                     {i.related_ci.map((c) => (
-                      <li key={c.id} className="rounded-xl border border-line p-3 text-xs" title={`${c.id} · ${c.status} · ${c.stage}`}>
+                      <li key={c.id} className="rounded-lg border border-line p-3 text-xs" title={`${c.id} · ${c.status} · ${c.stage}`}>
                         <p className="text-sm font-medium text-ink">{agentRunLabel(c.id, i.id)}</p>
                         <p className="mt-0.5 text-muted">{AGENT_STATUS[c.status] ?? c.status}</p>
                         <div className="mt-1.5 flex flex-wrap gap-3">
@@ -225,7 +234,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                 {handoff.data.probe_failures.map((f) => {
                   const plain = plainFailure(f);
                   return (
-                    <li key={f.check} className="rounded-xl border border-crit/25 bg-crit/5 p-4 text-sm">
+                    <li key={f.check} className="rounded-lg border border-crit/25 bg-crit/5 p-4 text-sm">
                       <p className="font-medium text-ink">{plain.title}</p>
                       <p className="mt-1 text-muted">{plain.explanation}</p>
                       {plain.rows.length > 0 && (
@@ -263,7 +272,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
             {showJson && handoff.data && (
               <div className="mt-3 space-y-3">
                 {handoff.data.probe_failures.map((f) => (
-                  <div key={f.check} className="rounded-xl border border-line p-3 text-xs">
+                  <div key={f.check} className="rounded-lg border border-line p-3 text-xs">
                     <p className="font-mono font-medium">{f.check}</p>
                     <p className="mt-1 text-muted">{f.reason}</p>
                     {f.source && <p className="mt-1 font-mono text-accent">{f.source}</p>}
@@ -273,7 +282,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     </div>
                   </div>
                 ))}
-                <pre className="scroll-x max-h-[480px] overflow-y-auto rounded-xl border border-line bg-page p-4 font-mono text-[11.5px] leading-relaxed text-muted">
+                <pre className="scroll-x max-h-[480px] overflow-y-auto rounded-lg border border-line bg-page p-4 font-mono text-[11.5px] leading-relaxed text-muted">
                   {JSON.stringify(handoff.data, null, 2)}
                 </pre>
               </div>
