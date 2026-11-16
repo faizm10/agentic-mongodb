@@ -517,3 +517,36 @@ def test_webhook_connector_signs_the_exact_body_with_a_secret_shown_once(tmp_pat
     assert request.headers["x-opsrelay-signature"] == f"sha256={expected}"
     assert request.headers["x-opsrelay-event"] == "test"
     assert owner.put("/api/v1/notifications/pagerduty", json={"routing_key": "short"}).status_code == 422
+
+
+def test_sentry_issue_webhooks_are_signed_and_roll_up_into_one_incident(tmp_path, settings, clock):
+    import hashlib
+    import hmac
+    import json
+
+    storage = make_sqlite(tmp_path)
+    app = create_app(storage, settings, clock=clock)
+    owner = signed_in(app)
+    storage.insert_doc("repos", "demo:shop", {"id": "demo:shop", "workspace_id": "demo", "service_id": "shop", "service_name": "Shop",
+                                              "repo": "octo/shop", "base_branch": "main", "deployed_url": "https://shop.example",
+                                              "workflow": None, "created_at": "2026-03-02T12:00:00Z"})
+    path = owner.post("/api/v1/sentry").json()["data"]["webhook_path"]
+    secret = "s" * 64
+    owner.put("/api/v1/sentry/secret", json={"client_secret": secret}).raise_for_status()
+    owner.put("/api/v1/repositories/shop/sentry", json={"project": "shop-web"}).raise_for_status()
+
+    def deliver(action, issue_id="11", signed_with=secret):
+        body = json.dumps({"action": action, "data": {"issue": {"id": issue_id, "shortId": f"SHOP-{issue_id}", "title": "TypeError",
+                                                                "level": "error", "project": {"slug": "shop-web"}}}}).encode()
+        sig = hmac.new(signed_with.encode(), body, hashlib.sha256).hexdigest()
+        return TestClient(app).post(path, content=body, headers={"Sentry-Hook-Signature": sig, "Sentry-Hook-Resource": "issue"})
+
+    assert deliver("created", signed_with="wrong").status_code == 401
+    created = deliver("created").json()["data"]
+    assert created["result"] == "created"
+    assert deliver("created").json()["data"]["open"] == 1  # a redelivery doesn't add the issue twice
+    assert deliver("created", issue_id="12").json()["data"] == {"result": "updated", "open": 2, "incident_id": created["incident_id"]}
+    deliver("resolved")
+    assert deliver("ignored", issue_id="12").json()["data"]["result"] == "resolved"
+    incident = owner.get(f"/api/v1/incidents/{created['incident_id']}").json()["data"]
+    assert incident["state"] == "resolved" and incident["service_name"] == "Shop"

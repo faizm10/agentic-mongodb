@@ -116,6 +116,7 @@ async def add_mapping(storage: Storage, ws: str, gh: GitHub, body: dict, now: da
 def public_mapping(m: dict) -> dict:
     return {**{k: m[k] for k in ("service_id", "service_name", "repo", "base_branch", "deployed_url", "workflow", "created_at")},
             "betterstack_monitor_id": m.get("betterstack_monitor_id"), "dependabot": m.get("dependabot"),
+            "sentry_project": m.get("sentry_project"),
             "agent": m.get("agent") or {"enabled": False, "mode": "report_only", "app": None}}
 
 
@@ -156,4 +157,6 @@ def remove_mapping(storage: Storage, ws: str, service_id: str) -> None:
         raise RepoError(404, f"Unknown service '{service_id}'.")
     if mapping.get("betterstack_monitor_id"):
         storage.delete_doc("bs_monitors", f"{ws}:{mapping['betterstack_monitor_id']}")
+    if mapping.get("sentry_project"):
+        storage.delete_doc("sentry_projects", f"{ws}:{mapping['sentry_project']}")
     storage.delete_doc("repos", f"{ws}:{service_id}")

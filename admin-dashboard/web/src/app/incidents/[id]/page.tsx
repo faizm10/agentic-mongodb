@@ -85,6 +85,7 @@ function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[]
   return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 }
 
+type SentryIssue = { id: string; short_id: string | null; title: string; culprit: string | null; level: string; url: string | null };
 type DependabotAlert = { number: number; package: string; severity: string; summary: string; manifest: string | null;
   patched_version: string | null; url: string | null };
 
@@ -160,6 +161,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         const noPatch = !(invDetails.changed_files as string[] | undefined)?.length;
         const alert = i.evidence.source === "betterstack" ? i.evidence as { cause?: string; url?: string; response_url?: string; screenshot_url?: string } : null;
         const deps = i.evidence.source === "dependabot" ? (i.evidence.alerts as DependabotAlert[]) : null;
+        const issues = i.evidence.source === "sentry" ? (i.evidence.issues as SentryIssue[]) : null;
 
         return (
           <div className="mt-4 space-y-8">
@@ -177,6 +179,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               <Field label="Failed workflow">
                 {alert ? `Better Stack monitor · ${alert.cause ?? "alert"}`
                   : deps ? `Dependabot · ${deps.length} open alert${deps.length === 1 ? "" : "s"}`
+                  : issues ? `Sentry · ${issues.length} unresolved issue${issues.length === 1 ? "" : "s"}`
                   : demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
                 {!demo && failedChecks.length > 0 && <span className="block truncate font-mono text-xs text-muted" title={failedChecks.join(", ")}>{failedChecks.join(", ")}</span>}
               </Field>
@@ -228,6 +231,19 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                             <p className="font-mono text-xs text-faint">
                               {d.manifest}{d.url?.startsWith("https://") && <> · <a href={d.url} target="_blank" rel="noreferrer" className="font-sans text-accent hover:underline">Alert #{d.number}</a></>}
                             </p>
+                          </li>
+                        ))}
+                      </ul>
+                    ) : issues ? (
+                      <ul className="mt-2 space-y-2 text-sm">
+                        {issues.map((x) => (
+                          <li key={x.id}>
+                            <p className="font-medium text-ink">
+                              {x.url?.startsWith("https://") ? <a href={x.url} target="_blank" rel="noreferrer" className="text-accent hover:underline">{x.short_id ?? x.id}</a> : x.short_id ?? x.id}
+                              {" "}<span className="text-xs font-normal text-muted">{x.level}</span>
+                            </p>
+                            <p className="text-muted">{x.title}</p>
+                            {x.culprit && <p className="font-mono text-xs text-faint">{x.culprit}</p>}
                           </li>
                         ))}
                       </ul>

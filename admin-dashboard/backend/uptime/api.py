@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, dependabot, netguard, notify, repositories, walkthrough
+from . import __version__, accounts, alerts, assistant, dependabot, netguard, notify, repositories, rollup, sentry, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -251,6 +251,14 @@ class MonitorMappingIn(BaseModel):
     monitor_id: str | None = Field(default=None, pattern=r"^[0-9]{1,20}$")
 
 
+class SentryProjectIn(BaseModel):
+    project: str | None = Field(default=None, pattern=r"^[A-Za-z0-9_-]{1,100}$")
+
+
+class SentrySecretIn(BaseModel):
+    client_secret: str = Field(min_length=1, max_length=200)
+
+
 class RepositoryIn(BaseModel):
     repo: str = Field(pattern=r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", max_length=140)
     service_name: str = Field(min_length=1, max_length=60)
@@ -375,14 +383,14 @@ def create_app(
         raise HTTPException(404, f"Unknown service '{service_id}'.")
 
     def service_keys(ws: str) -> list[str]:
-        """Monitored services plus mapped repositories (Better Stack alerts) and their Dependabot alerts."""
+        """Monitored services plus mapped repositories (Better Stack alerts) and their per-source rollups."""
         mapped = [m["id"] for m in storage.find_docs("repos", "workspace_id", ws)]
-        return [s.id for s in services(ws)] + mapped + [dependabot.service_key(m) for m in mapped]
+        return [s.id for s in services(ws)] + mapped + [rollup.key(m, s) for m in mapped for s in rollup.SOURCES]
 
     def service_name(service_id: str) -> str:
         if site := storage.get_service(service_id):
             return site.name
-        mapping = storage.get_doc("repos", service_id.removesuffix("#dependabot")) if ":" in service_id else None
+        mapping = storage.get_doc("repos", service_id.split("#")[0]) if ":" in service_id else None
         return mapping["service_name"] if mapping else service_id
 
     def incidents(ws: str, *, state: str | None = None, limit: int = 50) -> list[Incident]:
@@ -432,10 +440,11 @@ def create_app(
                            recovery_status=recovery_status(incident, recovery), recovery=recovery)
 
     def alert_health(incident: Incident) -> str | None:
-        """Better Stack is the health signal for alert-only services: down while its incident is open."""
-        if incident.evidence.get("source") != "betterstack":
+        """For alert-only sources the open incident is the health signal: its severity while open."""
+        if incident.evidence.get("source") not in ("betterstack", "sentry", "vercel"):
             return None
-        return "down" if storage.get_open_incident(incident.service_id) else "operational"
+        current = storage.get_open_incident(incident.service_id)
+        return current.severity if current else "operational"
 
     def repository_overview(ws: str) -> list[dict[str, Any]]:
         out = []
@@ -638,6 +647,39 @@ def create_app(
             return ok(alerts.map_monitor(storage, ws, service_id, body.monitor_id))
         except alerts.AlertError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.get("/api/v1/sentry", response_model=Envelope[dict[str, Any]])
+    def sentry_settings(ws: str = Depends(workspace)):
+        return ok(sentry.settings(storage, ws))
+
+    @app.post("/api/v1/sentry", response_model=Envelope[dict[str, Any]])
+    def sentry_create(ws: str = Depends(workspace)):
+        return ok(sentry.create(storage, ws, clock()))
+
+    @app.put("/api/v1/sentry/secret", response_model=Envelope[dict[str, Any]])
+    def sentry_secret(body: SentrySecretIn, ws: str = Depends(workspace)):
+        try:
+            return ok(sentry.set_secret(storage, ws, body.client_secret))
+        except sentry.SentryError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.put("/api/v1/repositories/{service_id}/sentry", response_model=Envelope[dict[str, Any]])
+    def map_sentry_project(service_id: str, body: SentryProjectIn, ws: str = Depends(workspace)):
+        try:
+            return ok(sentry.map_project(storage, ws, service_id, body.project))
+        except sentry.SentryError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.post("/api/v1/webhooks/sentry/{hook_id}", response_model=Envelope[dict[str, Any]])
+    async def sentry_webhook(hook_id: str, request: Request):
+        """Called by Sentry: authenticated by its HMAC signature of the raw body."""
+        try:
+            result = sentry.receive(storage, hook_id, request.headers.get(sentry.SIGNATURE_HEADER),
+                                    request.headers.get("sentry-hook-resource"), await request.body(), clock())
+        except sentry.SentryError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        logger.info("Sentry webhook %s: %s", hook_id[:6], result)
+        return ok(result)
 
     @app.get("/api/v1/notifications", response_model=Envelope[list[dict[str, Any]]])
     def notification_settings(ws: str = Depends(workspace)):

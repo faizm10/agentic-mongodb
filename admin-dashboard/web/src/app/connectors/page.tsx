@@ -5,6 +5,8 @@ import { PageHeader, Shell, Skeleton } from "@/components/ui";
 import { send, usePoll } from "@/lib/api";
 
 type Connection = { connected: boolean; login?: string; connected_at?: string };
+type Sentry = { configured: boolean; webhook_path?: string; has_secret?: boolean;
+  last_delivery?: { at: string; result: string; reason?: string; incident_id?: string } | null };
 type Notifier = { kind: string; label: string; configured: boolean; target?: string;
   last_delivery?: { at: string; event: string; error?: string | null } | null };
 type BetterStack = { configured: boolean; webhook_path?: string; secret_header?: string; secret?: string;
@@ -19,6 +21,7 @@ export default function Connectors() {
         <div className="space-y-6">
           <GitHubPanel connection={github.data} onChange={github.reload} />
           <BetterStackPanel />
+          <SentryPanel />
           <NotificationsPanel />
         </div>
       )}
@@ -209,5 +212,59 @@ function NotifierRow({ notifier: n, onChange }: { notifier: Notifier; onChange: 
       {note && <p className="text-xs text-ok" role="status">{note}</p>}
       {error && <p className="text-xs text-crit" role="alert">{error}</p>}
     </li>
+  );
+}
+
+function SentryPanel() {
+  const conf = usePoll<Sentry>("/api/v1/sentry", 60_000);
+  const [secret, setSecret] = useState("");
+  const [error, setError] = useState("");
+  const run = async (action: () => Promise<unknown>) => {
+    try {
+      await action();
+      setSecret("");
+      setError("");
+      conf.reload();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  if (!conf.data) return null;
+  const c = conf.data;
+  const last = c.last_delivery;
+  return (
+    <section className="panel space-y-3 p-5">
+      <h2 className="text-sm font-semibold">Sentry issues</h2>
+      {!c.configured ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-muted">Unresolved Sentry issues open an incident on the mapped service, and close it once they&apos;re resolved or ignored.</p>
+          <button type="button" className="btn btn-primary" onClick={() => run(() => send("POST", "/api/v1/sentry"))}>Create webhook URL</button>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm text-muted">
+            In Sentry, go to Settings → Developer Settings → Custom Integrations and create an internal integration with this webhook URL. Turn
+            on <code>issue</code> webhooks, then paste its Client Secret here. Set each service&apos;s Sentry project slug on the Repositories page.
+          </p>
+          <dl className="grid gap-2 text-xs sm:grid-cols-[9rem_1fr]">
+            <dt className="label">Webhook URL</dt>
+            <dd className="break-all font-mono">{window.location.origin}{c.webhook_path}</dd>
+            <dt className="label">Client secret</dt>
+            <dd>{c.has_secret ? "Saved" : "Not saved yet: deliveries are rejected until it is"}</dd>
+            <dt className="label">Last delivery</dt>
+            <dd>{last ? `${new Date(last.at).toLocaleString()} · ${last.result}${last.reason ? ` · ${last.reason}` : ""}` : "None yet"}</dd>
+          </dl>
+          <form className="flex flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); run(() => send("PUT", "/api/v1/sentry/secret", { client_secret: secret })); }}>
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Sentry client secret</span>
+              <input className="input font-mono" type="password" autoComplete="off" placeholder={c.has_secret ? "Replace the client secret" : "Client secret"}
+                value={secret} onChange={(e) => setSecret(e.target.value)} required minLength={32} />
+            </label>
+            <button type="submit" className="btn">Save secret</button>
+          </form>
+        </>
+      )}
+      {error && <p className="text-sm text-crit" role="alert">{error}</p>}
+    </section>
   );
 }

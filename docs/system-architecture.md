@@ -179,6 +179,13 @@ the `X-OpsRelay-Secret` header (Better Stack doesn't sign webhooks). The payload
 mapped service. One Better Stack incident is one OpsRelay incident: an exact redelivery is ignored, and
 acknowledged, resolved and reopened events update that same incident.
 
+**Sentry issues.** A workspace creates a webhook URL under **Connectors**, adds it to a Sentry internal
+integration with `issue` webhooks, and saves that integration's client secret; every delivery must carry
+`Sentry-Hook-Signature` (HMAC-SHA256 of the raw body with that secret). Each mapped service names its
+Sentry project slug. Issues created or unresolved join the repository's open set, resolved or ignored
+ones leave it, and the set drives one incident per repository (`uptime/rollup.py`, shared with Dependabot):
+degraded, or down if any issue is fatal, resolved when the set is empty. A redelivery changes nothing.
+
 **Notifications.** Under **Connectors**, a workspace can add outgoing connectors: Slack and Discord
 incoming webhooks, a generic webhook (JSON signed with `X-OpsRelay-Signature: sha256=<HMAC of the body>`,
 its secret shown once, every request through the private-URL guard) and PagerDuty (Events API v2:

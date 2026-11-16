@@ -8,7 +8,7 @@ import { type AgentMode, send, usePoll } from "@/lib/api";
 
 type Connection = { connected: boolean; login?: string };
 type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null;
-  dependabot?: { checked_at: string; result: string; reason?: string; open_alerts?: number } | null;
+  dependabot?: { checked_at: string; result: string; reason?: string; open_alerts?: number } | null; sentry_project: string | null;
   agent: { enabled: boolean; mode: AgentMode; app: string | null } };
 type AgentConfig = { worker_repo: string | null; apps: string[] };
 type Repo = { full_name: string; default_branch: string; private: boolean };
@@ -60,7 +60,10 @@ export default function Repositories() {
                           : m.dependabot.result === "skipped" ? "Dependabot: can't read alerts (token needs Dependabot alerts: read)"
                           : `Dependabot: ${m.dependabot.open_alerts} open alert${m.dependabot.open_alerts === 1 ? "" : "s"}`}
                       </span>
-                      <MonitorField mapping={m} onSaved={mapped.reload} />
+                      <MappingField mapping={m} label="Better Stack monitor" saved={m.betterstack_monitor_id} path="betterstack" field="monitor_id"
+                        pattern="[0-9]*" placeholder="ID" onSaved={mapped.reload} />
+                      <MappingField mapping={m} label="Sentry project" saved={m.sentry_project} path="sentry" field="project"
+                        pattern="[A-Za-z0-9_\-]*" placeholder="slug" onSaved={mapped.reload} />
                       {agentConfig.data && <AgentControl mapping={m} config={agentConfig.data} onSaved={mapped.reload} />}
                       <button type="button" className="btn ml-auto px-2" aria-label={`Remove ${m.service_name}`} onClick={() => remove(m)}>
                         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
@@ -155,14 +158,17 @@ function AddRepository({ onAdded }: { onAdded: () => void }) {
   );
 }
 
-function MonitorField({ mapping, onSaved }: { mapping: Mapping; onSaved: () => void }) {
-  const [value, setValue] = useState(mapping.betterstack_monitor_id ?? "");
+/** A per-service id for an alert source (Better Stack monitor, Sentry project), saved on its own. */
+function MappingField({ mapping, label, saved, path, field, pattern, placeholder, onSaved }: {
+  mapping: Mapping; label: string; saved: string | null; path: string; field: string; pattern: string; placeholder: string; onSaved: () => void;
+}) {
+  const [value, setValue] = useState(saved ?? "");
   const [error, setError] = useState("");
-  const dirty = value !== (mapping.betterstack_monitor_id ?? "");
+  const dirty = value !== (saved ?? "");
   const save = async (e: React.FormEvent) => {
     e.preventDefault();
     try {
-      await send("PUT", `/api/v1/repositories/${encodeURIComponent(mapping.service_id)}/betterstack`, { monitor_id: value || null });
+      await send("PUT", `/api/v1/repositories/${encodeURIComponent(mapping.service_id)}/${path}`, { [field]: value || null });
       setError("");
       onSaved();
     } catch (err) {
@@ -172,8 +178,8 @@ function MonitorField({ mapping, onSaved }: { mapping: Mapping; onSaved: () => v
   return (
     <form onSubmit={save} className="flex items-center gap-1.5 text-xs">
       <label className="flex items-center gap-1.5">
-        <span className="text-faint">Better Stack monitor</span>
-        <input className="input w-28 py-1 font-mono text-xs" inputMode="numeric" pattern="[0-9]*" placeholder="ID" value={value} onChange={(e) => setValue(e.target.value)} />
+        <span className="text-faint">{label}</span>
+        <input className="input w-28 py-1 font-mono text-xs" pattern={pattern} placeholder={placeholder} value={value} onChange={(e) => setValue(e.target.value)} />
       </label>
       {dirty && <button type="submit" className="btn px-2">Save</button>}
       {error && <span className="text-crit" role="alert">{error}</span>}
