@@ -143,7 +143,7 @@ def _repair_live(repairer: Repairer, failed_run: dict, similar: list[dict], evid
         return _needs_review(reason, evidence.cause, markdown)
 
     source_files = repairer._source_files(sha, app)
-    if os.environ.get("OPSRELAY_DEMO_FAST_FIX", "1") != "0":
+    if os.environ.get("OPSRELAY_DEMO_FAST_FIX", "0") == "1":
         known = _known_demo_fix(repairer, sha, app, source_files, live)
         if known is not None:
             return known
@@ -191,7 +191,7 @@ def _known_demo_fix(repairer: Repairer, sha: str, app, source_files: dict[str, s
 
     The demo bad deploys ship exactly one catalog bug, so when the deployed source holds a
     catalog ``buggy`` line, the fix is that bug's ``original`` line. Set
-    ``OPSRELAY_DEMO_FAST_FIX=0`` to always run the full investigation.
+    Off unless ``OPSRELAY_DEMO_FAST_FIX=1`` (dev.sh sets it): it skips the model and the tests.
     """
     from .patcher import _file_diff
 
