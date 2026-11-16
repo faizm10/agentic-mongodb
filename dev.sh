@@ -222,7 +222,7 @@ up() {
   skip="$(agent_skip_reason)"
   if [[ -z "$skip" ]]; then
     ca_file="$(agent_ca_file)"
-    start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
+    start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 OPSRELAY_DEMO_FAST_FIX=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
     agent=$((${#PIDS[@]} - 1))
     echo "AI agent worker started. Log: $LOG_DIR/agent-worker.log"
     # Reconciles checkouts interrupted by an incident. It runs separately from the agent and is
