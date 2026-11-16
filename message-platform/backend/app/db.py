@@ -79,6 +79,22 @@ CREATE TABLE IF NOT EXISTS receipts (
 );
 CREATE INDEX IF NOT EXISTS idx_receipts_user ON receipts(user_id, status);
 
+-- Order confirmations sent by NovaMart. The confirmation ID is derived from NovaMart's
+-- checkout ID, and both are unique, so a resend can never record (or deliver) twice.
+CREATE TABLE IF NOT EXISTS confirmations (
+    confirmation_id  TEXT PRIMARY KEY,
+    checkout_id      TEXT NOT NULL UNIQUE,
+    order_id         TEXT NOT NULL,
+    recipient        TEXT NOT NULL,
+    body             TEXT NOT NULL,
+    probe            INTEGER NOT NULL DEFAULT 0,
+    status           TEXT NOT NULL CHECK (status IN ('accepted', 'delivered')),
+    request_id       TEXT,
+    created_at       TEXT NOT NULL,
+    delivered_at     TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_confirmations_order ON confirmations(order_id);
+
 CREATE TABLE IF NOT EXISTS reactions (
     message_id  TEXT NOT NULL REFERENCES messages(id),
     user_id     TEXT NOT NULL REFERENCES users(id),
