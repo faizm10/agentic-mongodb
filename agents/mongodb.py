@@ -41,6 +41,7 @@ WORKFLOW_STEPS = "workflow_steps"
 MEMORIES = "memories"
 LIVE_INCIDENTS = "live_incidents"
 CHECKOUT_RECOVERIES = "checkout_recoveries"
+WORKER_HEARTBEATS = "worker_heartbeats"  # one document per running worker, expires when it stops
 UPTIME_INCIDENTS = "uptime_incidents"  # owned by the uptime monitor (admin-dashboard); read only here
 
 RECOVERY_PHASES = ["collecting", "reconciling", "needs_review", "complete"]
@@ -66,6 +67,8 @@ STATUS_AWAITING_MERGE = "awaiting_merge"  # draft PR opened and verified - done 
 STATUS_FAILED = "failed"              # unrecoverable error after max attempts
 STATUS_RESOLVED = "resolved"          # a human approved and merged the PR
 STATUS_REJECTED = "rejected"          # a human closed the PR without merging
+STATUS_REPORTED = "reported"          # verified patch recorded; draft PRs not enabled for the repo
+STATUS_AWAITING_DEPLOYMENT = "awaiting_deployment"  # merged; waiting for a deploy and a fresh probe
 
 SOURCE_CI = "ci"      # failed GitHub Actions run (Hamza's monitor); the default when absent
 SOURCE_LIVE = "live"  # failed live probe (Taha's uptime monitor)
@@ -156,7 +159,8 @@ INCIDENT_SCHEMA = {
             "run_attempt": {"bsonType": ["long", "int"], "minimum": 1},
             "commit_sha": {"bsonType": "string", "minLength": 7},
             "status": {"enum": [STATUS_OPEN, STATUS_NEEDS_REVIEW, STATUS_AWAITING_MERGE,
-                                STATUS_FAILED, STATUS_RESOLVED, STATUS_REJECTED]},
+                                STATUS_FAILED, STATUS_RESOLVED, STATUS_REJECTED,
+                                STATUS_REPORTED, STATUS_AWAITING_DEPLOYMENT]},
             "stage": {"enum": STAGES},
             "pr_intent": {
                 "bsonType": "object",
@@ -277,6 +281,8 @@ def ensure_setup(db: Database | None = None, vector_index: bool = True) -> None:
     _ensure_collection(db, CHECKOUT_RECOVERIES, CHECKOUT_RECOVERY_SCHEMA)
     db[CHECKOUT_RECOVERIES].create_index([("phase", ASCENDING), ("lease.expires_at", ASCENDING)],
                                          name="resumable")
+
+    db[WORKER_HEARTBEATS].create_index("expires_at", expireAfterSeconds=0, name="ttl")
 
     if vector_index:
         ensure_vector_index(db)
