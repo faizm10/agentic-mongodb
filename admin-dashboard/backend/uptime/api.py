@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, dependabot, netguard, repositories, walkthrough
+from . import __version__, accounts, alerts, assistant, dependabot, netguard, notify, repositories, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -273,6 +273,7 @@ def create_app(
     monitor_kwargs: dict[str, Any] | None = None,
     assistant_transport: Any = None,
     github_transport: Any = None,
+    notify_transport: Any = None,
 ) -> FastAPI:
     settings = settings or load_settings()
     storage = storage or open_storage(retention_days=settings.retention_days,
@@ -638,6 +639,33 @@ def create_app(
         except alerts.AlertError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
 
+    @app.get("/api/v1/notifications", response_model=Envelope[list[dict[str, Any]]])
+    def notification_settings(ws: str = Depends(workspace)):
+        return ok(notify.settings(storage, ws))
+
+    @app.put("/api/v1/notifications/{kind}", response_model=Envelope[dict[str, Any]])
+    def save_notification(kind: str, body: dict[str, Any], ws: str = Depends(workspace)):
+        try:
+            return ok(notify.save(storage, ws, kind, body, clock()))
+        except notify.NotifyError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.post("/api/v1/notifications/{kind}/test", response_model=Envelope[dict[str, Any]])
+    async def test_notification(kind: str, request: Request, ws: str = Depends(workspace)):
+        limit(f"notify-test:{ws}", 10, 3600)
+        try:
+            return ok(await notify.test(storage, ws, kind, str(request.base_url), clock(), notify_transport))
+        except notify.NotifyError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.delete("/api/v1/notifications/{kind}", response_model=Envelope[dict[str, Any]])
+    def remove_notification(kind: str, ws: str = Depends(workspace)):
+        try:
+            notify.remove(storage, ws, kind)
+        except notify.NotifyError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return ok({"kind": kind, "removed": True})
+
     @app.post("/api/v1/webhooks/betterstack/{hook_id}", response_model=Envelope[dict[str, Any]])
     async def betterstack_webhook(hook_id: str, request: Request):
         """Called by Better Stack, not the dashboard: authenticated by the per-workspace secret header."""
@@ -816,8 +844,13 @@ def create_app(
         if result is None:
             raise HTTPException(409, "A monitoring cycle is already running.")
         synced = [await dependabot.sync(storage, m, clock(), github_transport) for m in storage.all_docs("repos")]
+        notified = {"sent": 0, "failed": 0}
+        for ws in notify.workspaces(storage):
+            counts = await notify.dispatch(storage, ws, incidents(ws), service_name, str(request.base_url), clock(), notify_transport)
+            notified = {k: notified[k] + counts[k] for k in notified}
         return ok({"checked": len(result["statuses"]), "recorded": len(result["recorded"]), "duplicates": result["duplicates"],
-                   "dependabot": {r["result"]: sum(x["result"] == r["result"] for x in synced) for r in synced}})
+                   "dependabot": {r["result"]: sum(x["result"] == r["result"] for x in synced) for r in synced},
+                   "notifications": notified})
 
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
     def patch_service(service_id: str, body: ServicePatch, ws: str = Depends(workspace)):
