@@ -5,4 +5,5 @@ export function middleware(request: NextRequest) {
   if (!request.cookies.has("opsrelay_session")) return NextResponse.redirect(new URL("/sign-in", request.url));
 }
 
-export const config = { matcher: ["/((?!sign-in|api/|_next/|icon.svg|favicon.ico).*)"] };
+// Node.js, not Edge: Vercel Services rejects Edge output.
+export const config = { runtime: "nodejs", matcher: ["/((?!sign-in|api/|_next/|icon.svg|favicon.ico).*)"] };
