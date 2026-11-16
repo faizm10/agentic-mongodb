@@ -89,12 +89,12 @@ function FixConfirmation({ item, onChange }: { item: AgentActivity; onChange: ()
   const buttons = (yes: string, no?: string) => (
     <div className="mt-3 flex flex-wrap gap-2">
       <button type="button" disabled={pending} onClick={() => answer(true)}
-        className="min-h-10 rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-xs font-medium text-ink transition hover:bg-ok/20 disabled:cursor-wait disabled:opacity-50">
+        className="btn btn-ok">
         {yes}
       </button>
       {no && (
         <button type="button" disabled={pending} onClick={() => answer(false)}
-          className="min-h-10 rounded-lg border border-crit/30 bg-crit/5 px-3 py-2 text-xs font-medium text-ink transition hover:bg-crit/10 disabled:cursor-wait disabled:opacity-50">
+          className="btn btn-danger">
           {no}
         </button>
       )}
@@ -138,10 +138,10 @@ export function AgentActivityPanel({ activity, onChange }: { activity: AgentActi
         {activity.map((item) => {
           const state = STATES[item.state];
           return (
-            <article key={item.incident_id} className="rounded-xl border border-line-strong bg-raised/50 p-4" aria-live="polite">
+            <article key={item.incident_id} className="card p-4" aria-live="polite">
               <div className="flex flex-wrap items-center gap-2">
                 <h3 className="font-semibold text-ink">{item.service_name}</h3>
-                <span className="ml-auto inline-flex items-center gap-1.5 rounded-full border border-line px-2.5 py-1 text-xs font-medium text-muted">
+                <span className="ml-auto badge tone-neutral">
                   <span className={`h-1.5 w-1.5 rounded-full ${state.color}`} /> {state.label}
                 </span>
               </div>
@@ -171,6 +171,9 @@ export function AgentActivityPanel({ activity, onChange }: { activity: AgentActi
                 </dl>
               )}
               <div className="mt-4 flex flex-wrap items-center gap-4 border-t border-line pt-3 text-xs">
+                <Link href={`/ai-agent/${encodeURIComponent(item.incident_id)}`} className="text-accent hover:underline">
+                  Watch walkthrough
+                </Link>
                 <Link href={`/incidents/${encodeURIComponent(item.incident_id)}`} className="text-accent hover:underline">
                   View incident
                 </Link>
