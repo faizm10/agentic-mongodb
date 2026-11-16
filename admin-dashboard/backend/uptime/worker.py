@@ -46,6 +46,11 @@ def utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+async def _skipped() -> None:
+    """A probe the service has no URL for."""
+    return None
+
+
 def slot_for(now: datetime, interval: int) -> datetime:
     epoch = now.timestamp()
     return datetime.fromtimestamp(math.floor(epoch / interval) * interval, tz=timezone.utc)
@@ -82,12 +87,12 @@ class UptimeMonitor:
         self._last_purge: datetime | None = None
         self.has_lease = False
         self.cycles = 0
+        self.register_services()
 
     # ---------------------------------------------------------------- probing
     def services(self) -> list[ServiceConfig]:
-        """Config file is the source of truth for endpoints; storage keeps the enabled flag."""
-        stored = {s.id: s for s in self.storage.list_services()}
-        return [s.model_copy(update={"enabled": stored[s.id].enabled}) if s.id in stored else s for s in self.config_services]
+        """Storage is the source of truth: every workspace's sites, plus any from the config file."""
+        return self.storage.list_services()
 
     def register_services(self) -> None:
         for service in self.config_services:
@@ -98,7 +103,9 @@ class UptimeMonitor:
         check_id = f"{service.id}:{iso(slot)}" if scheduled else f"{service.id}:{iso(started)}:manual"
         try:
             frontend, availability, functional = await asyncio.gather(
-                probe_frontend(client, service), probe_availability(client, service), probe_functional(client, service)
+                probe_frontend(client, service),
+                probe_availability(client, service) if service.availability_url else _skipped(),
+                probe_functional(client, service) if service.functional_url else _skipped(),
             )
             status, failure_type, summary = classify(frontend, availability, functional)
         except Exception as exc:  # noqa: BLE001 - a monitor bug must surface as 'unknown', not crash the loop
@@ -108,21 +115,22 @@ class UptimeMonitor:
         return CheckRecord(
             id=check_id, service_id=service.id, slot=slot, checked_at=started, scheduled=scheduled,
             status=status, failure_type=failure_type, summary=summary,
-            latency_ms=availability.latency_ms if isinstance(availability, ProbeResult) and availability.ok else None,
+            # Response time is the health endpoint's, or the page's for a site without one.
+            latency_ms=next((p.latency_ms for p in (availability or frontend,) if isinstance(p, ProbeResult) and p.ok), None),
             functional_latency_ms=functional.latency_ms if isinstance(functional, ProbeResult) and functional.http_status else None,
             frontend=frontend, availability=availability, functional=functional,
             interval_seconds=self.interval, worker_id=self.worker_id,
         )
 
-    async def run_cycle(self, *, scheduled: bool = True) -> dict[str, Any] | None:
-        """Check every enabled service once, concurrently. Returns None if a cycle is already running."""
+    async def run_cycle(self, *, scheduled: bool = True, workspace_id: str | None = None) -> dict[str, Any] | None:
+        """Check every enabled service (or one workspace's) once, concurrently. None if a cycle is already running."""
         if self._cycle_lock.locked():
             return None
         async with self._cycle_lock:
             started_wall = self.clock()
             t0 = time.perf_counter()
             slot = slot_for(started_wall, self.interval)
-            services = [s for s in self.services() if s.enabled]
+            services = [s for s in self.services() if s.enabled and workspace_id in (None, s.workspace_id)]
             async with httpx.AsyncClient(transport=self.transport, follow_redirects=True,
                                          headers={"User-Agent": "opsrelay-uptime/1.0"}) as client:
                 records = await asyncio.gather(*(self.check_service(client, s, slot, scheduled=scheduled) for s in services))
@@ -186,7 +194,6 @@ class UptimeMonitor:
         return False
 
     async def run_forever(self, stop: asyncio.Event) -> None:
-        self.register_services()
         logger.info("uptime worker %s starting: interval=%ss storage=%s", self.worker_id, self.interval,
                     self.storage.describe()["label"])
         while not stop.is_set():

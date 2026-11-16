@@ -1,11 +1,11 @@
 "use client";
 
 import Link from "next/link";
-import { use, useState } from "react";
+import { use } from "react";
 import { ArrowLeft, ArrowUpRight, GitPullRequest } from "lucide-react";
 import { AffectedCheckouts } from "@/components/recovery";
 import { Badge, ErrorPanel, Shell, Skeleton, StatusText } from "@/components/ui";
-import { DEV, type Incident, type Walkthrough, isDemoIncident, networkError, responseError, usePoll } from "@/lib/api";
+import { type Incident, type Walkthrough, isDemoIncident, usePoll } from "@/lib/api";
 import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
 import { agentRun, functionalLabel, healthAndProgress, phase } from "@/lib/phase";
 import { plainFailure } from "@/lib/plain";
@@ -83,38 +83,6 @@ function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[]
     out.push({ at: e.at, label: RECOVERY_EVENT[e.type] ?? e.type.replaceAll("_", " "), detail: e.message, source: e.checkout_id ? `Recovery · ${e.checkout_id}` : "Recovery" });
   }
   return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
-}
-
-/** Development only: tells the demo the fix is merged, so the local app is restored and re-checked. */
-function MarkFixMerged({ incident, onChange }: { incident: Incident; onChange: () => void }) {
-  const [pending, setPending] = useState(false);
-  const [error, setError] = useState("");
-  if (incident.state !== "open" || incident.events.some((e) => e.type === "fix_merged")) return <p className="text-sm text-muted">Nothing to simulate for this incident.</p>;
-
-  async function markMerged() {
-    setPending(true);
-    setError("");
-    try {
-      const response = await fetch(`/api/v1/incidents/${encodeURIComponent(incident.id)}/fix-merged`, { method: "POST" });
-      if (!response.ok) {
-        setError((await responseError(response, "POST /fix-merged")).message);
-        return;
-      }
-      onChange();
-    } catch {
-      setError(networkError("POST /fix-merged").message);
-    } finally {
-      setPending(false);
-    }
-  }
-  return (
-    <div>
-      <button type="button" disabled={pending} onClick={markMerged} className="btn">
-        {pending ? "Saving…" : "Simulate fix merged (restores the demo app)"}
-      </button>
-      {error && <p className="mt-2 text-xs text-crit" role="alert">{error}</p>}
-    </div>
-  );
 }
 
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
@@ -382,13 +350,6 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               </ol>
             </Section>
 
-            {DEV && (
-              <section className="rounded-lg border border-dashed border-line-strong p-4" aria-labelledby="dev-title">
-                <h2 id="dev-title" className="text-sm font-semibold">Development only</h2>
-                <p className="mb-3 mt-0.5 text-xs text-muted">Demo controls. Not shown in production builds.</p>
-                <MarkFixMerged incident={i} onChange={inc.reload} />
-              </section>
-            )}
           </div>
         );
       })()}

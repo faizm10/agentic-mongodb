@@ -29,6 +29,9 @@ export function mascotMessage(s: Summary): MascotMessage {
   }
   const setup = (key: string, text: string, label: string): MascotMessage =>
     ({ key: `${ws}:${key}`, tone: "accent", text, links: [{ href: "/repositories", label }] });
+  if (!s.services.length) {
+    return { key: `${ws}:site`, tone: "accent", text: "Add a site so I can start checking it.", links: [{ href: "/sites", label: "Add a site" }] };
+  }
   if (!s.setup.github_connected) return setup("github", "Connect GitHub so I know which repositories your services run.", "Connect GitHub");
   if (!s.repositories.length) return setup("repo", "Map a repository to a service so incidents point at the right code.", "Add a repository");
   if (!s.setup.betterstack_configured) return setup("betterstack", "Connect Better Stack so its alerts open incidents here.", "Connect Better Stack");

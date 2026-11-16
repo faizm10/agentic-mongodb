@@ -113,6 +113,10 @@ class SqliteStorage:
                 return None
             return self.upsert_service(service.model_copy(update={"enabled": enabled}), keep_enabled=False)
 
+    def delete_service(self, service_id: str) -> None:
+        with self._lock:
+            self._conn.execute("DELETE FROM services WHERE id = ?", (service_id,))
+
     # ----------------------------------------------------------------- checks
     def insert_check(self, check: CheckRecord) -> bool:
         cur = self._exec(

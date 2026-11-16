@@ -38,7 +38,7 @@ def sign_up(storage: Storage, email: str, password: str, now: datetime) -> dict:
         raise AccountError(409, "An account with this email already exists. Sign in instead.")
     salt = secrets.token_bytes(16)
     storage.put_doc("users", user["id"], {**user, "salt": salt.hex(), "password": _hash_password(password, salt)})
-    storage.insert_doc("workspaces", DEMO_WORKSPACE, {"id": DEMO_WORKSPACE, "name": "NovaMart & NovaConnect demo",
+    storage.insert_doc("workspaces", DEMO_WORKSPACE, {"id": DEMO_WORKSPACE, "name": "My workspace",
                                                       "owner_id": user["id"], "created_at": iso(now)})
     return user
 

@@ -144,6 +144,9 @@ class MongoStorage:
                                                   return_document=ReturnDocument.AFTER)
         return ServiceConfig.model_validate(_strip(d)) if d else None
 
+    def delete_service(self, service_id: str) -> None:
+        self.db[SERVICES].delete_one({"_id": service_id})
+
     # ----------------------------------------------------------------- checks
     def insert_check(self, check: CheckRecord) -> bool:
         try:

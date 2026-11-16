@@ -162,28 +162,13 @@ worker takes the expired lease on the same incident, sees the saved intent, look
 up by its stable ID instead of resending, and finishes the attempt. The dashboard then shows the
 same incident ID, both worker IDs and exactly one confirmation for the order.
 
-## Demo controls
-
-The dashboard's outage controls (`admin-dashboard/backend/uptime/api.py`):
-
-- **Bad deploy, scenario 4 "Checkout errors, orders still placed"** pushes a commit to `main`
-  ("Simplify checkout error handling") and turns on NovaConnect's controlled confirmation delay.
-  Nothing in the incident names either.
-- **Send 4 customer checkouts** (`POST /api/v1/demo/checkouts`) places real checkouts that become
-  the interrupted attempts.
-- **Fix merged** applies the merged fix to the running NovaMart and asks for a fresh check. It
-  leaves the NovaConnect delay running; **Restore NovaConnect** ends it (the operational step).
-
-The NovaConnect delay (`opsrelay-outage.json`, scenario `confirmation_timeout`) alternates between
-dropping a request after the delay and recording it but answering late, so both "confirmation
-missing" and "response lost" attempts occur.
-
 ## Accounts and workspaces
 
 The dashboard needs a sign-in (email and password; the session is an HttpOnly cookie). Every data route
 reads one workspace, and the API returns 404 for a workspace, service or incident the account does not
-own. The services in the monitor's config belong to the `demo` workspace, which the first account to sign
-up claims; later accounts start with an empty workspace they create.
+own. Each workspace adds the sites it monitors under **Sites** (a page URL and an optional health URL); a
+GitHub Actions schedule calls `POST /api/v1/cron/check` every 5 minutes to check every workspace's sites.
+The first account to sign up claims the `demo` workspace; later accounts create their own.
 
 Under **Repositories**, a workspace connects GitHub with a token (stored server-side, never returned) and
 maps a repository it can access to a service: base branch, deployed URL and an optional workflow check.
