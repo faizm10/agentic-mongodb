@@ -178,11 +178,19 @@ The NovaConnect delay (`opsrelay-outage.json`, scenario `confirmation_timeout`) 
 dropping a request after the delay and recording it but answering late, so both "confirmation
 missing" and "response lost" attempts occur.
 
+## Accounts and workspaces
+
+The dashboard needs a sign-in (email and password; the session is an HttpOnly cookie). Every data route
+reads one workspace, and the API returns 404 for a workspace, service or incident the account does not
+own. The services in the monitor's config belong to the `demo` workspace, which the first account to sign
+up claims; later accounts start with an empty workspace they create.
+
 ## Durable state in Atlas
 
 | Collection | Owner | Holds |
 | --- | --- | --- |
 | `uptime_incidents`, `uptime_*` | uptime monitor | incidents, checks, service state, recovery phase |
+| `opsrelay_users`, `opsrelay_emails`, `opsrelay_sessions`, `opsrelay_workspaces` | uptime API | dashboard accounts, hashed session tokens, workspaces |
 | `incidents`, `workflow_steps` | agent orchestrator | repair stage machine, PR intent, recommendation, audit trail |
 | `memories` | agent orchestrator | past fixes for Vector Search |
 | `checkout_recoveries` | recovery worker | per-incident attempts, evidence, retry intent, verified results, workers, events |
