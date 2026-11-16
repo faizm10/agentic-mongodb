@@ -814,7 +814,10 @@ def main() -> None:
         try:
             m.ensure_setup()
             rl_policy.ensure_setup()
-        except ServerSelectionTimeoutError:
+        except ServerSelectionTimeoutError as exc:
+            if "CERTIFICATE_VERIFY_FAILED" in str(exc):
+                sys.exit("MongoDB setup skipped: Atlas's TLS certificate could not be verified. Point SSL_CERT_FILE "
+                         "at a CA bundle (python -m certifi prints one), then run ./dev.sh setup again.")
             # DNS resolved but no member answered: almost always the Atlas IP Access List.
             sys.exit("MongoDB setup skipped: the cluster did not answer on port 27017. Add this machine's public IP "
                      "(curl https://api.ipify.org) under Atlas > Security > Network Access, then run ./dev.sh setup again.")
