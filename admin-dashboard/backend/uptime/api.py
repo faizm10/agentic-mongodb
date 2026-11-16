@@ -14,7 +14,7 @@ from contextlib import asynccontextmanager
 from datetime import datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import Depends, FastAPI, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -238,8 +238,12 @@ def create_app(
     clock=utcnow,
     monitor_kwargs: dict[str, Any] | None = None,
     assistant_transport: Any = None,
+    demo_controls: bool | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
+    # Demo mutations push bugs to main and rewrite incident state: off unless explicitly a dev or demo deployment.
+    if demo_controls is None:
+        demo_controls = os.environ.get("OPSRELAY_ENV") in ("development", "demo")
     storage = storage or open_storage(retention_days=settings.retention_days,
                                       incident_retention_days=settings.incident_retention_days)
     for service in settings.services:  # make configuration visible even before the worker runs
@@ -277,6 +281,10 @@ def create_app(
 
     def ok(data: Any) -> dict[str, Any]:
         return {"data": data, "meta": meta()}
+
+    def require_demo() -> None:
+        if not demo_controls:
+            raise HTTPException(404, "Demo controls are off. They run only with OPSRELAY_ENV=development or demo.")
 
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException):
@@ -359,7 +367,7 @@ def create_app(
         lease = run.get("lease_expires_at")
         if status == "open":
             state = "working" if lease and lease > now else "waiting"
-        elif status == "awaiting_merge":
+        elif status in ("awaiting_merge", "reported"):
             state = "awaiting_review"
         elif status in ("needs_review", "failed", "rejected"):
             state = "needs_attention"
@@ -533,7 +541,7 @@ def create_app(
         return ok(build_handoff(incident, service, clock()))
 
     # ---------------------------------------------------------- mutations
-    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]])
+    @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
     def start_demo_outage(service_id: str, body: DemoOutageIn):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -548,7 +556,7 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 
-    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]])
+    @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
     def stop_demo_outage(service_id: str):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -563,7 +571,7 @@ def create_app(
 
     # Bad deploys push a real bug to the base branch on GitHub. Responses never name the
     # bug: the repair agent must find it from the evidence.
-    @app.post("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]])
+    @app.post("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
     def ship_bad_deploy(service_id: str, body: BadDeployIn):
         if service_id not in bad_deploys.APPS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -580,7 +588,7 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True, "branch": bad_deploys.branch()})
 
-    @app.delete("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]])
+    @app.delete("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
     def restore_bad_deploy(service_id: str):
         if service_id not in bad_deploys.APPS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
@@ -595,7 +603,7 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 
-    @app.post("/api/v1/demo/checkouts", response_model=Envelope[list[dict[str, Any]]])
+    @app.post("/api/v1/demo/checkouts", response_model=Envelope[list[dict[str, Any]]], dependencies=[Depends(require_demo)])
     async def demo_checkouts(body: DemoCheckoutsIn):
         """Place customer checkouts on NovaMart (each retried once with the same checkout ID on failure)."""
         return ok(await demo_traffic.place_checkouts(service_or_404("novamart"), body.count))
@@ -654,7 +662,7 @@ def create_app(
         storage.request_check(now)
         return ok(incident_out(incident, now))
 
-    @app.post("/api/v1/incidents/{incident_id}/fix-merged", response_model=Envelope[IncidentOut])
+    @app.post("/api/v1/incidents/{incident_id}/fix-merged", response_model=Envelope[IncidentOut], dependencies=[Depends(require_demo)])
     def mark_fix_merged(incident_id: str):
         """A person says the fix for this incident is merged into main.
 

@@ -82,6 +82,8 @@ class HttpConfirmationClient:
               request_id: str | None = None) -> tuple[httpx.Response, float]:
         started = time.perf_counter()
         headers = {"X-Request-ID": request_id} if request_id else {}
+        if token := os.getenv("OPSRELAY_SERVICE_TOKEN"):
+            headers["Authorization"] = f"Bearer {token}"
         try:
             with httpx.Client(timeout=self.timeout_seconds, transport=self._transport) as client:
                 response = client.request(method, f"{self.base_url}{path}", json=json, headers=headers)

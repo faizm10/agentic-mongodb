@@ -12,7 +12,15 @@ function barColor(status: Status) {
 }
 
 /* ----------------------------------------------------------- uptime bars */
-export function UptimeBars({ bars, window, height = 34, label }: { bars: Bar[]; window: Window; height?: number; label: string }) {
+function describe(b: Bar, window: Window): string {
+  const when = `${clock(b.start, true)} to ${clock(b.end, window !== "24h")}`;
+  if (b.status === "unknown") return `${when}: no data recorded`;
+  return `${when}: ${STATUS_META[b.status].label}, ${b.uptime_pct?.toFixed(2)}% uptime, ${b.checks} checks${b.failed_checks ? `, ${b.failed_checks} failed` : ""}`;
+}
+
+export function UptimeBars({ bars, window, height = 34, label, compact = false }: {
+  bars: Bar[]; window: Window; height?: number; label: string; compact?: boolean;
+}) {
   const [active, setActive] = useState<number | null>(null);
   const hovered = active !== null ? bars[active] : null;
   const leftPct = active !== null ? ((active + 0.5) / bars.length) * 100 : 0;
@@ -27,7 +35,7 @@ export function UptimeBars({ bars, window, height = 34, label }: { bars: Bar[]; 
       <div
         role="img"
         tabIndex={0}
-        aria-label={`${label}: ${bars.length} periods. ${counts.operational} operational, ${counts.degraded} degraded, ${counts.down} down, ${counts.unknown} without data. Use arrow keys to inspect.`}
+        aria-label={`${label}: ${bars.length} periods. ${counts.operational} operational, ${counts.degraded} degraded, ${counts.down} down, ${counts.unknown} without data. Use the arrow keys to read each period.`}
         onKeyDown={(e) => {
           if (e.key === "ArrowRight") setActive((i) => Math.min(bars.length - 1, (i ?? bars.length - 1) + 1));
           else if (e.key === "ArrowLeft") setActive((i) => Math.max(0, (i ?? bars.length) - 1));
@@ -56,6 +64,7 @@ export function UptimeBars({ bars, window, height = 34, label }: { bars: Bar[]; 
         ))}
       </div>
 
+      <span className="sr-only" aria-live="polite">{hovered ? describe(hovered, window) : ""}</span>
       {hovered && (
         <div
           className="pointer-events-none absolute bottom-full z-20 mb-2.5 w-60 -translate-x-1/2 rounded-lg border border-line-strong bg-raised p-3 text-xs shadow-2xl shadow-black/50"
@@ -98,7 +107,7 @@ export function UptimeBars({ bars, window, height = 34, label }: { bars: Bar[]; 
         </div>
       )}
 
-      <div className="mt-2 flex justify-between text-[11px] text-faint">
+      <div className={`flex justify-between text-[11px] text-faint ${compact ? "mt-1" : "mt-2"}`}>
         <span>{WINDOW_START_LABEL[window]}</span>
         <span>Now</span>
       </div>

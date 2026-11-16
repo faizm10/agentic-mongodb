@@ -90,6 +90,23 @@ def test_order_saved_confirmation_missing_is_resent_once_and_read_back(services,
     assert services.checkout_record("chk_missing_0001")["attempt"]["state"] == "completed"
 
 
+def test_with_recovery_writes_disabled_a_missing_confirmation_waits_for_review(services, db):
+    started = m.utcnow()
+    services.novaconnect_fault("drop")
+    order_id = services.checkout("chk_nowrite_001").json()["order_id"]
+    services.novaconnect_fault(None)
+
+    _recovering(db, started)
+    worker = _worker(services, db, writes=False)
+    [doc] = worker.poll()
+
+    a = doc["attempts"]["chk_nowrite_001"]
+    assert a["outcome"] == "needs_review" and not a["final"] and not a.get("retry_intent")
+    assert "Recovery writes are disabled" in a["reason"]
+    assert worker.novamart.resends == [] and services.confirmations_for(order_id) == []
+    assert doc["phase"] != "complete"
+
+
 def test_confirmation_recorded_but_response_lost_completes_without_resending(services, db):
     started = m.utcnow()
     services.novaconnect_fault("lost_response")

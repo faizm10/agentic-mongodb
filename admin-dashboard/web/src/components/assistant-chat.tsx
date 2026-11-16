@@ -3,10 +3,11 @@
 import { usePathname } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, RotateCcw, Send, X } from "lucide-react";
+import { networkError, responseError } from "@/lib/api";
 
 type Message = { role: "user" | "assistant"; content: string };
 
-const SUGGESTIONS = ["What's broken right now?", "What is the AI agent doing?", "Is it fixed yet?", "What should I do next?"];
+const SUGGESTIONS = ["What's broken right now?", "What is the investigation doing?", "Is it fixed yet?", "What should I do next?"];
 
 /** Floating chat about current incidents. On an incident page it focuses on that incident. */
 export function AssistantChat() {
@@ -43,19 +44,14 @@ export function AssistantChat() {
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ messages: next.slice(-20), incident_id: incidentId }),
       });
-      const body = await response.json().catch(() => null);
       if (!response.ok) {
-        setError(
-          body?.error?.message ??
-            (response.status === 404
-              ? "The running uptime API is older than this page and has no assistant. Restart ./dev.sh."
-              : "The assistant couldn't answer. Try again."),
-        );
+        setError((await responseError(response, "POST /api/v1/assistant/chat")).message);
         return;
       }
+      const body = await response.json();
       setMessages([...next, { role: "assistant", content: body.data.reply }]);
     } catch {
-      setError("Could not reach the uptime API.");
+      setError(networkError("POST /api/v1/assistant/chat").message);
     } finally {
       setPending(false);
     }
@@ -97,7 +93,7 @@ export function AssistantChat() {
       <div className="flex-1 space-y-3 overflow-y-auto px-4 py-4 text-sm" aria-live="polite">
         {messages.length === 0 && (
           <div>
-            <p className="text-muted">Ask anything about the outage, the AI agent's progress, or what to do next.</p>
+            <p className="text-muted">Ask anything about the outage, the investigation's progress, or what to do next.</p>
             <div className="mt-3 flex flex-wrap gap-2">
               {SUGGESTIONS.map((s) => (
                 <button key={s} type="button" onClick={() => send(s)} className="rounded-full border border-line px-3 py-1.5 text-xs text-muted transition hover:border-accent/60 hover:text-ink">

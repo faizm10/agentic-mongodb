@@ -12,11 +12,15 @@ Isolation model:
 - New regression tests (``added_tests``) may only be ``<root>/<test_dir>/test_opsrelay_*.py``
   files that do not exist yet; they are written into the export before anything runs.
 
-This is process-level isolation, not a container: tests can still reach the network.
+When Docker is available (``OPSRELAY_VERIFIER_RUNNER=auto`` with an image, or ``=docker``) each pytest run is a disposable container instead:
+no network, a read-only root, all capabilities dropped, an unprivileged user and CPU, memory
+and process limits (``OPSRELAY_VERIFIER_IMAGE``, ``_CPUS``, ``_MEMORY``). Without Docker the ``process``
+runner is used: process-level isolation only, so tests can still reach the network and the filesystem.
 """
 
 from __future__ import annotations
 
+import functools
 import io
 import os
 import re
@@ -27,6 +31,7 @@ import sys
 import tarfile
 import tempfile
 import time
+import uuid
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -195,6 +200,22 @@ class VerificationSession:
             **fields,
         )
 
+    def check_suite(self, diff: str) -> CandidateCheck:
+        """Apply ``diff`` to a fresh copy and run the full suite, including any added tests.
+        Used to re-verify an already verified patch on a newer base commit."""
+        patch = validate_patch(diff, self.app)
+        if not patch.accepted:
+            return CandidateCheck(False, f"patch rejected: {patch.rejection_reason}")
+        workspace = self._fresh_copy(f"rebase-{self._next_id()}")
+        applied = _git(workspace, "apply", "--whitespace=nowarn", "-", input=diff, check=False)
+        if applied.returncode != 0:
+            return CandidateCheck(False, f"patch does not apply at {self.commit_sha}: {applied.stderr.strip()[:500]}")
+        suite = self._pytest(workspace / self.app.root, [self.app.test_dir])
+        reason = (f"the full {self.app.name} suite passes at {self.commit_sha[:7]}" if suite.passed else
+                  "app test suite timed out" if suite.timed_out else f"app test suite fails at {self.commit_sha[:7]}")
+        return CandidateCheck(suite.passed, reason, suite=suite, changed_files=patch.changed_files,
+                              files={p: (workspace / p).read_text() for p in patch.changed_files} if suite.passed else {})
+
     def _next_id(self) -> int:
         self._candidates += 1
         return self._candidates
@@ -308,11 +329,59 @@ def _sandbox_env(tmp: Path) -> dict[str, str]:
     }
 
 
+@functools.cache
+def docker_reachable() -> bool:
+    try:
+        return subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                              capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
+def runner() -> str:
+    """``auto`` (default): containers when Docker is reachable and an image is set, else plain processes."""
+    chosen = os.getenv("OPSRELAY_VERIFIER_RUNNER", "auto")
+    if chosen == "auto":
+        return "docker" if os.getenv("OPSRELAY_VERIFIER_IMAGE") and docker_reachable() else "process"
+    return chosen
+
+
+def _docker_command(app: AppConfig, pytest: list[str], name: str) -> list[str]:
+    # The workspace arrives as a tar on stdin, so the runner can be a remote DOCKER_HOST.
+    unpack = 'tar -x -C /tmp -f - && cd "/tmp/w/$0" && exec python "$@"'
+    return [
+        "docker", "run", "-i", "--rm", "--name", name, "--network", "none", "--read-only",
+        "--tmpfs", "/tmp:rw,size=512m", "--cap-drop", "ALL", "--security-opt", "no-new-privileges",
+        "--user", "65534:65534", "--pids-limit", "256",
+        "--cpus", os.getenv("OPSRELAY_VERIFIER_CPUS", "1"), "--memory", os.getenv("OPSRELAY_VERIFIER_MEMORY", "1g"),
+        "-e", "HOME=/tmp", "-e", "TMPDIR=/tmp", "-e", "PYTHONDONTWRITEBYTECODE=1", "-e", "PYTHONHASHSEED=0",
+        "-e", "LANG=C.UTF-8", "-e", "NO_COLOR=1",
+        os.environ["OPSRELAY_VERIFIER_IMAGE"], "sh", "-c", unpack, app.root, *pytest,
+    ]
+
+
+def _workspace_tar(app: AppConfig, cwd: Path):
+    workspace = cwd
+    for _ in app.root.split("/"):
+        workspace = workspace.parent
+    archive = tempfile.TemporaryFile()
+    with tarfile.open(fileobj=archive, mode="w") as tar:
+        tar.add(workspace, arcname="w")
+    archive.seek(0)
+    return archive
+
+
 def _run_pytest(app: AppConfig, cwd: Path, targets: list[str], env: dict[str, str]) -> TestRun:
-    command = [sys.executable, "-m", "pytest", *app.pytest_args, "--", *targets]
+    pytest = ["-m", "pytest", *app.pytest_args, "--", *targets]
+    container = f"opsrelay-verify-{uuid.uuid4().hex[:12]}" if runner() == "docker" else None
+    command = _docker_command(app, pytest, container) if container else [sys.executable, *pytest]
+    stdin = _workspace_tar(app, cwd) if container else subprocess.DEVNULL
+    if container:  # the docker client may target a separate runner host over TLS
+        env = {**env, **{k: os.environ[k] for k in ("DOCKER_HOST", "DOCKER_TLS_VERIFY", "DOCKER_CERT_PATH")
+                         if os.getenv(k)}}
     started = time.monotonic()
     proc = subprocess.Popen(
-        command, cwd=cwd, env=env, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        command, cwd=cwd, env=env, stdin=stdin, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
         text=True, start_new_session=True,
     )
     timed_out = False
@@ -321,10 +390,12 @@ def _run_pytest(app: AppConfig, cwd: Path, targets: list[str], env: dict[str, st
     except subprocess.TimeoutExpired:
         timed_out = True
         os.killpg(proc.pid, signal.SIGKILL)
+        if container:  # killing the docker client does not stop the container
+            subprocess.run(["docker", "kill", container], capture_output=True, check=False, timeout=30)
         output, _ = proc.communicate()
         output += f"\n[verifier] timed out after {app.timeout_seconds}s"
     return TestRun(
-        command=["python", *command[1:]],
+        command=["python", *pytest],
         returncode=None if timed_out else proc.returncode,
         passed=not timed_out and proc.returncode == 0,
         timed_out=timed_out,

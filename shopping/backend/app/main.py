@@ -6,6 +6,7 @@ Run locally:
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import os
@@ -15,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Header, Query, Request
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -28,6 +29,14 @@ from .errors import NovaMartError
 from .probe import run_checkout_probe
 from .schemas import CHECKOUT_ID_PATTERN, CheckoutRequest, QuoteRequest, ReconciliationIn
 from .store import DemoStore
+
+
+def require_service_token(authorization: str | None = Header(default=None)) -> None:
+    """Service-to-service routes need ``Bearer $OPSRELAY_SERVICE_TOKEN`` when the token is set."""
+    token = os.getenv("OPSRELAY_SERVICE_TOKEN")
+    if token and not hmac.compare_digest(authorization or "", f"Bearer {token}"):
+        raise HTTPException(status_code=401, detail="service token required")
+
 
 SERVICE_NAME = "novamart-shopping-api"
 DEFAULT_DATA_DIR = Path(__file__).resolve().parent.parent / "data"
@@ -135,6 +144,11 @@ def create_app(data_dir: Path | str | None = None, *, confirmations: Confirmatio
         )
 
     # ---------------------------------------------------------------- health
+    @app.get("/api/version", tags=["health"])
+    def version() -> dict[str, Any]:
+        # The deploy sets OPSRELAY_DEPLOYED_SHA; the agent checks it contains a merged fix.
+        return {"version": __version__, "commit_sha": os.getenv("OPSRELAY_DEPLOYED_SHA")}
+
     @app.get("/api/health", tags=["health"])
     def health() -> dict[str, Any]:
         return {
@@ -239,7 +253,7 @@ def create_app(data_dir: Path | str | None = None, *, confirmations: Confirmatio
         return JSONResponse(status_code=200 if result.replayed else 201, content=content)
 
     # ------------------------------------------------- checkout attempts (recovery)
-    @app.get("/api/checkouts", tags=["recovery"])
+    @app.get("/api/checkouts", tags=["recovery"], dependencies=[Depends(require_service_token)])
     def list_checkouts(
         since: datetime | None = None,
         until: datetime | None = None,
@@ -249,15 +263,15 @@ def create_app(data_dir: Path | str | None = None, *, confirmations: Confirmatio
         attempts = service.store.list_checkouts(since=since, until=until, unfinished=unfinished, limit=limit)
         return {"count": len(attempts), "checkouts": attempts}
 
-    @app.get("/api/checkouts/{checkout_id}", tags=["recovery"])
+    @app.get("/api/checkouts/{checkout_id}", tags=["recovery"], dependencies=[Depends(require_service_token)])
     def get_checkout(checkout_id: str) -> dict[str, Any]:
         return service.checkout_record(checkout_id)
 
-    @app.post("/api/checkouts/{checkout_id}/confirmation", tags=["recovery"])
+    @app.post("/api/checkouts/{checkout_id}/confirmation", tags=["recovery"], dependencies=[Depends(require_service_token)])
     def resend_confirmation(checkout_id: str, request: Request) -> dict[str, Any]:
         return service.resend_confirmation(checkout_id, request.state.request_id)
 
-    @app.put("/api/checkouts/{checkout_id}/reconciliation", tags=["recovery"])
+    @app.put("/api/checkouts/{checkout_id}/reconciliation", tags=["recovery"], dependencies=[Depends(require_service_token)])
     def record_reconciliation(checkout_id: str, body: ReconciliationIn) -> dict[str, Any]:
         return service.record_reconciliation(checkout_id, body.outcome, body.incident_id, body.evidence)
 

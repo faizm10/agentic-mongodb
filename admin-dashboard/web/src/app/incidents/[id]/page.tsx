@@ -2,18 +2,13 @@
 
 import Link from "next/link";
 import { use, useState } from "react";
-import { ArrowLeft, Bot, CheckCircle2, ChevronDown, ExternalLink, GitMerge, GitPullRequest, Workflow } from "lucide-react";
-import { RouteBadge } from "@/components/incidents";
-import { IncidentBadge, RecoveryPanel } from "@/components/recovery";
-import { ErrorPanel, Shell, Skeleton, Stat, StatusIcon, StatusPill } from "@/components/ui";
-import { type Incident, isDemoIncident, usePoll } from "@/lib/api";
-import { FAILURE_LABELS, clock, duration, useNow } from "@/lib/format";
+import { ArrowLeft, ArrowUpRight, GitPullRequest } from "lucide-react";
+import { AffectedCheckouts } from "@/components/recovery";
+import { Badge, ErrorPanel, Shell, Skeleton, StatusText } from "@/components/ui";
+import { DEV, type Incident, type Walkthrough, isDemoIncident, networkError, responseError, usePoll } from "@/lib/api";
+import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
+import { agentRun, functionalLabel, healthAndProgress, phase } from "@/lib/phase";
 import { plainFailure } from "@/lib/plain";
-
-const NEXT_STEP: Record<Incident["investigation_route"], string> = {
-  investigate: "The app is running, but something it does is giving wrong results. The AI agent will look for the cause, test a fix, and send it for review.",
-  service_health: "The app isn't responding at all. That usually needs someone to restart or redeploy it rather than a code fix.",
-};
 
 type Handoff = Record<string, unknown> & {
   probe_failures: { check: string; reason: string; source?: string | null; expected?: unknown; actual?: unknown }[];
@@ -21,43 +16,80 @@ type Handoff = Record<string, unknown> & {
   next_steps: string[];
   code_repair_candidate: boolean;
 };
+type Rec = { action?: string; failure_point?: string; cause?: string; detail?: string; evidence?: string[] };
+type Verification = { tests_passed?: boolean; test_output?: string; verified_at?: string };
 
-const AGENT_STATUS: Record<string, string> = {
-  open: "AI agent is working on it",
-  awaiting_merge: "Fix ready for review",
-  needs_review: "AI agent needs a person to help",
-  failed: "AI agent couldn't finish",
-  resolved: "Fix merged",
-  rejected: "Fix was turned down",
+const RUN_STATUS: Record<string, string> = {
+  open: "Investigating",
+  awaiting_merge: "Awaiting PR review",
+  needs_review: "Needs an engineer",
+  failed: "Stopped after repeated errors",
+  reported: "Proposed fix ready (report-only)",
+  awaiting_deployment: "Awaiting deployment",
+  resolved: "Merged",
+  rejected: "PR closed without merge",
 };
 
-/** Which problem an agent run was for, in words: this outage, an earlier one, or a failed CI run. */
-function agentRunLabel(runId: string, incidentId: string): string {
-  if (runId.endsWith(`#${incidentId}`)) return "AI fix for this outage";
-  if (/#UPT-/.test(runId)) return "AI fix for an earlier outage";
-  return "AI fix for a failed automated test run";
-}
+const ACTION: Record<string, string> = {
+  propose_code_fix: "Code fix",
+  operational_step: "Operational step",
+  ask_for_review: "Needs an engineer",
+};
 
 const EVENT_LABEL: Record<string, string> = {
-  opened: "Incident detected",
+  opened: "Incident opened",
   escalated: "Escalated",
   deescalated: "De-escalated",
   failure_changed: "Failure changed",
-  resolved: "Recovered",
+  resolved: "Incident resolved",
   acknowledged: "Acknowledged",
   link_added: "Link added",
   fix_confirmed: "Fix confirmed",
-  fix_disputed: "Still broken after the fix",
-  fix_merged: "Fix merged into main",
-  service_recovered: "Fresh checkout passed",
+  fix_disputed: "Still failing after the fix",
+  fix_merged: "Fix marked as merged",
+  service_recovered: "Fresh check passed",
   relapsed: "Failing again",
 };
 
-/** Lets a person say the fix is merged into main; the running app gets it and is checked again. */
+const RECOVERY_EVENT: Record<string, string> = {
+  collected: "Interrupted checkouts collected",
+  worker_claimed: "Recovery worker started",
+  retry_intent_saved: "Confirmation resend intent saved",
+  resend_failed: "Confirmation resend failed",
+  attempt_completed: "Confirmation verified",
+  attempt_failed: "Checkout marked failed",
+  awaiting_delivery: "Waiting for confirmation delivery",
+  needs_review: "Checkout needs review",
+  outcome_not_recorded: "Outcome not recorded in NovaMart",
+};
+
+type Entry = { at: string; label: string; detail?: string; source: string };
+
+/** Monitor, agent and recovery records as one chronological list. Nothing is inferred. */
+function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[] {
+  const out: Entry[] = i.events.map((e) => ({ at: e.at, label: EVENT_LABEL[e.type] ?? e.type, detail: demo ? undefined : e.message, source: "Monitor" }));
+  for (const s of walk?.steps ?? []) {
+    if (!s.ended_at || s.state === "waiting" || s.state === "running") continue;
+    const d = s.details as Record<string, unknown>;
+    const label = {
+      similar: `Similar incidents retrieved (${(d.matches as unknown[] | undefined)?.length ?? 0})`,
+      investigated: s.state === "done" ? "Patch verified" : "Investigation stopped: needs an engineer",
+      pr: d.recovered_existing ? `Existing PR found after restart${d.pr_number ? ` (#${d.pr_number})` : ""}` : `Draft PR opened${d.pr_number ? ` (#${d.pr_number})` : ""}`,
+      merge: s.state === "failed" ? "PR closed without merge" : "PR merged",
+    }[s.key];
+    if (label) out.push({ at: s.ended_at, label, detail: s.key === "investigated" ? s.summary : undefined, source: "Investigation" });
+  }
+  for (const e of i.recovery?.events ?? []) {
+    out.push({ at: e.at, label: RECOVERY_EVENT[e.type] ?? e.type.replaceAll("_", " "), detail: e.message, source: e.checkout_id ? `Recovery · ${e.checkout_id}` : "Recovery" });
+  }
+  return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
+}
+
+/** Development only: tells the demo the fix is merged, so the local app is restored and re-checked. */
 function MarkFixMerged({ incident, onChange }: { incident: Incident; onChange: () => void }) {
   const [pending, setPending] = useState(false);
   const [error, setError] = useState("");
-  const merged = incident.events.some((e) => e.type === "fix_merged");
+  if (incident.state !== "open" || incident.events.some((e) => e.type === "fix_merged")) return <p className="text-sm text-muted">Nothing to simulate for this incident.</p>;
 
   async function markMerged() {
     setPending(true);
@@ -65,231 +97,288 @@ function MarkFixMerged({ incident, onChange }: { incident: Incident; onChange: (
     try {
       const response = await fetch(`/api/v1/incidents/${encodeURIComponent(incident.id)}/fix-merged`, { method: "POST" });
       if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        setError(body?.error?.message ?? "Could not save this. Try again.");
+        setError((await responseError(response, "POST /fix-merged")).message);
         return;
       }
       onChange();
     } catch {
-      setError("Could not reach the uptime API.");
+      setError(networkError("POST /fix-merged").message);
     } finally {
       setPending(false);
     }
   }
-
-  if (merged) {
-    return (
-      <p className="mt-4 flex items-start gap-2 rounded-lg border border-ok/30 bg-ok/10 p-3 text-sm text-ink" role="status">
-        <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-ok" aria-hidden="true" />
-        Fixed and merged into main. The status turns green after the next check.
-      </p>
-    );
-  }
-  if (incident.state !== "open") return null;
   return (
-    <div className="mt-4">
-      <button type="button" disabled={pending} onClick={markMerged}
-        className="inline-flex min-h-10 w-full items-center justify-center gap-1.5 rounded-lg border border-ok/40 bg-ok/10 px-3 py-2 text-xs font-medium text-ink transition hover:bg-ok/20 disabled:cursor-wait disabled:opacity-50">
-        <GitMerge className="h-3.5 w-3.5" aria-hidden="true" /> {pending ? "Saving…" : "Mark as fixed & merged into main"}
+    <div>
+      <button type="button" disabled={pending} onClick={markMerged} className="btn">
+        {pending ? "Saving…" : "Simulate fix merged (restores the demo app)"}
       </button>
       {error && <p className="mt-2 text-xs text-crit" role="alert">{error}</p>}
     </div>
   );
 }
 
+function Field({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div className="min-w-0 px-4 py-3 sm:px-5">
+      <dt className="text-xs text-muted">{label}</dt>
+      <dd className="mt-0.5 text-sm text-ink">{children}</dd>
+    </div>
+  );
+}
+
+function Section({ title, aside, children }: { title: string; aside?: React.ReactNode; children: React.ReactNode }) {
+  const id = `${title.toLowerCase().replace(/\W+/g, "-")}-title`;
+  return (
+    <section aria-labelledby={id}>
+      <div className="mb-2 flex flex-wrap items-baseline justify-between gap-2">
+        <h2 id={id} className="text-sm font-semibold">{title}</h2>
+        {aside && <span className="text-xs text-muted">{aside}</span>}
+      </div>
+      <div className="panel">{children}</div>
+    </section>
+  );
+}
+
+function More({ summary, children }: { summary: string; children: React.ReactNode }) {
+  return (
+    <details className="group border-t border-line px-4 py-2.5 text-sm sm:px-5">
+      <summary className="cursor-pointer text-xs font-medium text-muted hover:text-ink">{summary}</summary>
+      <div className="mt-2">{children}</div>
+    </details>
+  );
+}
+
+const pre = "scroll-x max-h-80 overflow-y-auto rounded-md border border-line bg-page p-3 font-mono text-[11px] leading-relaxed text-muted";
+
 export default function IncidentPage({ params }: { params: Promise<{ id: string }> }) {
   const { id } = use(params);
   const inc = usePoll<Incident>(`/api/v1/incidents/${encodeURIComponent(id)}`);
-  const handoff = usePoll<Handoff>(inc.data && !isDemoIncident(inc.data) ? `/api/v1/incidents/${encodeURIComponent(id)}/evidence` : null);
-  const [showJson, setShowJson] = useState(false);
-  const now = useNow();
   const i = inc.data;
   const demo = i ? isDemoIncident(i) : false;
-  const live = i ? (i.state === "open" ? (now - new Date(i.started_at).getTime()) / 1000 : i.duration_seconds) : 0;
+  const handoff = usePoll<Handoff>(i && !demo ? `/api/v1/incidents/${encodeURIComponent(id)}/evidence` : null);
+  const walk = usePoll<Walkthrough>(i ? `/api/v1/incidents/${encodeURIComponent(id)}/walkthrough` : null);
+  const now = useNow();
 
   return (
-    <Shell meta={inc.meta} updatedAt={inc.updatedAt} error={Boolean(inc.error)}>
+    <Shell meta={inc.meta} updatedAt={inc.updatedAt} error={inc.error}>
       <Link href="/incidents" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink">
-        <ArrowLeft className="h-4 w-4" /> Incidents
+        <ArrowLeft className="h-4 w-4" aria-hidden="true" /> Incidents
       </Link>
       {!i && inc.error ? (
-        <ErrorPanel message={inc.error.message} onRetry={inc.reload} />
+        <ErrorPanel error={inc.error} onRetry={inc.reload} />
       ) : !i ? (
         <Skeleton className="mt-6 h-48" />
-      ) : (
-        <div className="mt-5 space-y-6">
-          <section className="panel p-6 sm:p-7">
-            <div className="flex flex-wrap items-start gap-4">
-              <StatusIcon status={i.state === "open" ? i.severity : "operational"} className="h-8 w-8" />
-              <div className="min-w-0 flex-1">
-                <p className="font-mono text-xs text-faint">{i.id}</p>
-                <h1 className="mt-1 text-xl font-semibold tracking-tight">{i.title}</h1>
-                <p className="mt-1 text-sm text-muted">{demo ? `Service status: ${i.state === "open" ? i.severity : "recovered"}.` : i.summary}</p>
-                <div className="mt-3 flex flex-wrap items-center gap-2">
-                  <span className="label">Incident</span>
-                  <IncidentBadge incident={i} />
-                  <StatusPill status={i.peak_severity} />
-                  {!demo && <RouteBadge route={i.investigation_route} />}
-                </div>
-                <div className="mt-2 flex flex-wrap items-center gap-2">
-                  <span className="label">Service health now</span>
-                  <StatusPill status={i.service_health} />
-                </div>
-                <Link href={`/ai-agent/${encodeURIComponent(i.id)}`} className="btn mt-4">Agent walkthrough</Link>
-              </div>
-            </div>
-            <div className="mt-6 grid grid-cols-2 gap-5 border-t border-line pt-5 md:grid-cols-4">
-              <Stat label="Started" value={clock(i.started_at)} sub={new Date(i.started_at).toLocaleDateString()} />
-              <Stat label={i.state === "open" ? "Ongoing for" : "Duration"} value={duration(live)} sub={i.resolved_at ? `recovered ${clock(i.resolved_at)}` : "until recovery"} />
-              <Stat label={demo ? "Status" : "Failure type"} value={<span className="text-base">{demo ? (i.state === "open" ? i.severity : "recovered") : FAILURE_LABELS[i.failure_type ?? ""] ?? "—"}</span>} sub={`${i.failed_check_count} failed checks`} />
-              <Stat label="Service" value={<span className="text-base">{i.service_name}</span>} sub={`agent app: ${i.app}`} />
-            </div>
-          </section>
+      ) : (() => {
+        const p = phase(i);
+        const hp = healthAndProgress(i);
+        const run = agentRun(i);
+        const steps = Object.fromEntries((walk.data?.steps ?? []).map((s) => [s.key, s]));
+        const inv = steps.investigated;
+        const invDetails = (inv?.details ?? {}) as Record<string, unknown>;
+        const rec = invDetails.recommendation as Rec | undefined;
+        const ver = invDetails.verification as Verification | undefined;
+        const prUrl = ((steps.pr?.details as Record<string, unknown> | undefined)?.url as string | undefined) ?? run?.pr_url ?? i.links.find((l) => l.kind === "repair_pr")?.url;
+        const fixVerification = (steps.fresh?.details as Record<string, unknown> | undefined)?.fix_verification as { fresh_checkout_check_id?: string } | undefined;
+        const latest = i.evidence.latest_failure as { probes?: { functional?: { details?: { failed_checks?: string[] } } } } | undefined;
+        const failedChecks = latest?.probes?.functional?.details?.failed_checks ?? handoff.data?.probe_failures.map((f) => f.check) ?? [];
+        const elapsed = i.state === "open" ? (now - new Date(i.started_at).getTime()) / 1000 : i.duration_seconds;
+        const entries = timeline(i, walk.data, demo);
+        const others = i.related_ci.filter((c) => c.id !== run?.id);
+        const lastTestLine = ver?.test_output?.trim().split("\n").pop();
 
-          {(i.recovery || i.recovery_phase) && <RecoveryPanel incident={i} />}
+        return (
+          <div className="mt-4 space-y-8">
+            <header>
+              <p className="text-sm text-muted">{i.service_name}</p>
+              <h1 className="mt-0.5 text-lg font-semibold">{i.title}</h1>
+              <p className="mt-1 text-sm text-ink">
+                <StatusText status={i.service_health} label={hp.health} /> <span className="text-muted">·</span> {hp.progress}
+              </p>
+              <p className="mt-1 font-mono text-[11px] text-faint">{i.id}</p>
+            </header>
 
-          <div className="grid gap-6 lg:grid-cols-[1fr_380px]">
-            <section className="panel p-6">
-              <h2 className="text-sm font-semibold">Timeline</h2>
-              <ol className="mt-5 space-y-5 border-l border-line pl-5">
-                {i.events.map((e, n) => (
-                  <li key={n} className="relative">
-                    <span className="absolute -left-[27px] top-0.5 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-surface">
-                      <StatusIcon status={e.status ?? "unknown"} className="h-3.5 w-3.5" />
-                    </span>
-                    <p className="text-sm font-medium">{EVENT_LABEL[e.type] ?? e.type}</p>
-                    <p className="text-xs text-faint">{clock(e.at, true)}</p>
-                    <p className="mt-1 text-sm text-muted">{demo ? "Service status update recorded." : e.message}</p>
-                    {e.check_id && <p className="mt-1 font-mono text-[11px] text-faint">check {e.check_id}</p>}
+            <dl className="panel grid divide-y divide-line sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4 lg:divide-x [&>*:nth-child(n+3)]:sm:border-t [&>*:nth-child(n+3)]:sm:border-line [&>*:nth-child(n+3)]:lg:border-t-0">
+              <Field label="Affected service">{i.service_name}</Field>
+              <Field label="Failed workflow">
+                {demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
+                {!demo && failedChecks.length > 0 && <span className="block truncate font-mono text-xs text-muted" title={failedChecks.join(", ")}>{failedChecks.join(", ")}</span>}
+              </Field>
+              <Field label="Current phase"><Badge tone={p.tone}>{p.label}</Badge></Field>
+              <Field label="Next action">{p.next}</Field>
+            </dl>
+
+            <div className="grid gap-6 md:grid-cols-2">
+              <Section title="Service health">
+                <dl className="divide-y divide-line">
+                  <Field label="Now"><StatusText status={i.service_health} label={hp.health} /></Field>
+                  <Field label="Fresh check">
+                    {i.service_recovered_at ? <span className="tabular">Passed {clock(i.service_recovered_at, true)}</span> : i.state === "resolved" ? "Passed" : "Not passed yet"}
+                    {i.recovery_check_id && <span className="block font-mono text-xs text-muted">{i.recovery_check_id}</span>}
+                  </Field>
+                </dl>
+              </Section>
+              <Section title="Incident progress">
+                <dl className="divide-y divide-line">
+                  <Field label="Phase"><Badge tone={p.tone}>{p.label}</Badge><span className="mt-1 block text-muted">{hp.progress}</span></Field>
+                  <Field label={i.state === "open" ? "Open for" : "Lasted"}>
+                    <span className="tabular">{duration(elapsed)} · started {clock(i.started_at, true)}{i.resolved_at ? ` · resolved ${clock(i.resolved_at, true)}` : ""}</span>
+                  </Field>
+                </dl>
+              </Section>
+            </div>
+
+            {!demo && (
+              <Section title="Investigation" aside={run ? RUN_STATUS[run.status] ?? run.status : ROUTE_LABELS[i.investigation_route].label}>
+                <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
+                  <div className="px-4 py-4 sm:px-5">
+                    <h3 className="text-xs font-semibold text-muted">Failed check</h3>
+                    {handoff.data?.probe_failures.length ? (
+                      <ul className="mt-2 space-y-3">
+                        {handoff.data.probe_failures.map((f) => {
+                          const plain = plainFailure(f);
+                          return (
+                            <li key={f.check} className="text-sm">
+                              <p className="font-medium text-ink">{plain.title} <span className="font-mono text-xs font-normal text-faint">{f.check}</span></p>
+                              <p className="mt-0.5 text-muted">{plain.explanation}</p>
+                              {plain.rows.length > 0 && (
+                                <div className="scroll-x mt-2">
+                                  <table className="tabular w-full min-w-[300px] text-left text-xs">
+                                    <thead className="text-faint"><tr><th className="py-1 pr-4 font-medium">Case</th><th className="py-1 pr-4 font-medium">Expected</th><th className="py-1 font-medium">Actual</th></tr></thead>
+                                    <tbody>
+                                      {plain.rows.map((row) => (
+                                        <tr key={row.label} className="border-t border-line">
+                                          <td className="py-1.5 pr-4 text-muted">{row.label}</td>
+                                          <td className="py-1.5 pr-4 text-ink">{row.expected}</td>
+                                          <td className="py-1.5 font-medium text-crit">{row.actual}</td>
+                                        </tr>
+                                      ))}
+                                    </tbody>
+                                  </table>
+                                </div>
+                              )}
+                            </li>
+                          );
+                        })}
+                      </ul>
+                    ) : <p className="mt-2 text-sm text-muted">{i.summary}</p>}
+                  </div>
+                  <div className="px-4 py-4 sm:px-5">
+                    <h3 className="text-xs font-semibold text-muted">Proposed fix</h3>
+                    {!inv || inv.state === "waiting" || inv.state === "running" || inv.state === "skipped" ? (
+                      <p className="mt-2 text-sm text-muted">{inv?.state === "skipped" ? "Not a code problem: no patch is proposed." : inv?.summary ?? "No investigation recorded yet."}</p>
+                    ) : (
+                      <dl className="mt-2 space-y-2 text-sm">
+                        {rec?.action && <div><dt className="text-xs text-muted">Recommendation</dt><dd className="text-ink">{ACTION[rec.action] ?? rec.action}{rec.detail ? ` · ${rec.detail}` : ""}</dd></div>}
+                        {(invDetails.root_cause as string | undefined) && <div><dt className="text-xs text-muted">Cause</dt><dd className="text-ink">{invDetails.root_cause as string}</dd></div>}
+                        <div><dt className="text-xs text-muted">Change</dt><dd className="text-ink">{inv.summary}</dd></div>
+                        {(invDetails.changed_files as string[] | undefined)?.length ? (
+                          <div><dt className="text-xs text-muted">Files</dt><dd className="font-mono text-xs text-ink">{(invDetails.changed_files as string[]).join(", ")}</dd></div>
+                        ) : null}
+                        {prUrl && (
+                          <dd><a href={prUrl} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-accent hover:underline">
+                            <GitPullRequest className="h-3.5 w-3.5" aria-hidden="true" /> View pull request on GitHub <ArrowUpRight className="h-3 w-3" aria-hidden="true" />
+                          </a></dd>
+                        )}
+                      </dl>
+                    )}
+                  </div>
+                </div>
+                <div className="border-t border-line">
+                  <h3 className="px-4 pt-3 text-xs font-semibold text-muted sm:px-5">Verification</h3>
+                  <dl className="grid divide-y divide-line sm:grid-cols-3 sm:divide-x sm:divide-y-0">
+                    <Field label="Before the patch">{failedChecks.length ? `Failing: ${failedChecks.join(", ")}` : i.summary}</Field>
+                    <Field label="After the patch">
+                      {ver?.tests_passed == null ? <span className="text-muted">Not verified yet</span>
+                        : <><StatusText status={ver.tests_passed ? "operational" : "down"} label={ver.tests_passed ? "Tests passed" : "Tests failed"} />
+                          {lastTestLine && <span className="block truncate font-mono text-xs text-muted" title={lastTestLine}>{lastTestLine}</span>}</>}
+                    </Field>
+                    <Field label="After deployment">
+                      {fixVerification?.fresh_checkout_check_id ? <StatusText status="operational" label="Fresh check passed on the deployed fix" />
+                        : i.service_recovered_at ? <StatusText status="operational" label={`Fresh check passed ${clock(i.service_recovered_at)}`} />
+                        : <span className="text-muted">Not deployed or not checked yet</span>}
+                    </Field>
+                  </dl>
+                </div>
+                {ver?.test_output && <More summary="Test output"><pre className={pre}>{ver.test_output}</pre></More>}
+                {!!rec?.evidence?.length && (
+                  <More summary={`Evidence the investigation used (${rec.evidence.length})`}>
+                    <ul className="list-disc space-y-1 pl-4 text-xs text-muted">{rec.evidence.map((e) => <li key={e}>{e}</li>)}</ul>
+                    {rec.failure_point && <p className="mt-2 text-xs text-muted">Failure point: {rec.failure_point}</p>}
+                  </More>
+                )}
+                {!!(steps.similar?.details as { matches?: unknown[] } | undefined)?.matches?.length && (
+                  <More summary="Similar past incidents (Atlas Vector Search)">
+                    <ul className="tabular space-y-1 font-mono text-xs text-muted">
+                      {((steps.similar.details as { matches: { memory_id: string; score: number }[] }).matches).map((m) => <li key={m.memory_id}>{m.memory_id} · score {m.score}</li>)}
+                    </ul>
+                  </More>
+                )}
+                {handoff.data && (
+                  <More summary="Raw incident evidence (JSON)">
+                    {i.evidence.route_reason && <p className="mb-2 text-xs text-muted">{i.evidence.route_reason}</p>}
+                    {handoff.data.next_steps.length > 0 && <ul className="mb-2 list-disc space-y-1 pl-4 text-xs text-muted">{handoff.data.next_steps.map((s) => <li key={s}>{s}</li>)}</ul>}
+                    <pre className={pre}>{JSON.stringify(handoff.data, null, 2)}</pre>
+                  </More>
+                )}
+                {others.length > 0 && (
+                  <More summary={`Other repair runs (${others.length})`}>
+                    <ul className="space-y-1 text-xs text-muted">
+                      {others.map((c) => (
+                        <li key={c.id} className="flex flex-wrap gap-x-3">
+                          <span className="font-mono">{c.id}</span><span>{RUN_STATUS[c.status] ?? c.status}</span>
+                          {c.pr_url && <a className="text-accent hover:underline" href={c.pr_url} target="_blank" rel="noreferrer">PR</a>}
+                          {c.run_url && <a className="text-accent hover:underline" href={c.run_url} target="_blank" rel="noreferrer">CI run</a>}
+                        </li>
+                      ))}
+                    </ul>
+                  </More>
+                )}
+                <div className="border-t border-line px-4 py-2.5 sm:px-5">
+                  <Link href={`/ai-agent/${encodeURIComponent(i.id)}`} className="text-xs font-medium text-accent hover:underline">Step-by-step investigation</Link>
+                </div>
+              </Section>
+            )}
+
+            {(i.recovery || i.recovery_phase) && (
+              <Section title="Affected checkouts" aside={i.recovery ? `${i.recovery.attempts.length} checkout${i.recovery.attempts.length === 1 ? "" : "s"} · ${hp.progress}` : undefined}>
+                {i.recovery ? <AffectedCheckouts recovery={i.recovery} />
+                  : <p className="px-4 py-3 text-sm text-muted sm:px-5">A fresh check passed. The recovery worker has not picked this incident up yet.</p>}
+                {i.recovery && i.recovery.workers.length > 0 && (
+                  <More summary={`Recovery workers (${i.recovery.workers.length})`}>
+                    <ul className="space-y-0.5 font-mono text-xs text-muted">{i.recovery.workers.map((w, n) => <li key={w}>{w}{n < i.recovery!.workers.length - 1 ? " · replaced" : ""}</li>)}</ul>
+                  </More>
+                )}
+              </Section>
+            )}
+
+            <Section title="Timeline" aside={`${entries.length} events`}>
+              <ol className="divide-y divide-line">
+                {entries.map((e, n) => (
+                  <li key={n} className="grid grid-cols-[5.5rem_minmax(0,1fr)] gap-3 px-4 py-2.5 text-sm sm:grid-cols-[8.5rem_minmax(0,1fr)_10rem] sm:px-5">
+                    <time className="tabular text-xs text-muted" dateTime={e.at}>{clock(e.at, true)}</time>
+                    <div className="min-w-0">
+                      <p className="text-ink">{e.label}</p>
+                      {e.detail && <p className="text-xs text-muted">{e.detail}</p>}
+                    </div>
+                    <p className="col-start-2 truncate text-xs text-faint sm:col-start-auto sm:text-right">{e.source}</p>
                   </li>
                 ))}
                 {i.state === "open" && !i.recovery_phase && (
-                  <li className="relative">
-                    <span className="absolute -left-[25px] top-1.5 h-2.5 w-2.5 animate-pulse rounded-full bg-crit" />
-                    <p className="text-sm text-muted">Still failing · last failure {clock(i.last_failure_at, true)}</p>
-                  </li>
+                  <li className="px-4 py-2.5 text-sm text-muted sm:px-5">Still failing · last failure <span className="tabular">{clock(i.last_failure_at, true)}</span></li>
                 )}
               </ol>
-            </section>
+            </Section>
 
-            <div className="space-y-6">
-              {!demo && <section className="panel p-6">
-                <h2 className="flex items-center gap-2 text-sm font-semibold"><Bot className="h-4 w-4 text-muted" /> What happens next</h2>
-                <p className="mt-2 text-sm text-muted">{NEXT_STEP[i.investigation_route]}</p>
-                {handoff.data && (
-                  <details className="mt-4 text-xs">
-                    <summary className="cursor-pointer font-medium text-muted hover:text-ink">Technical notes</summary>
-                    {i.evidence.route_reason && <p className="mt-3 leading-relaxed text-faint">{i.evidence.route_reason}</p>}
-                    <p className="mt-3">
-                      Code-repair candidate:{" "}
-                      <span className={handoff.data.code_repair_candidate ? "font-semibold text-warn" : "text-muted"}>
-                        {handoff.data.code_repair_candidate ? "yes, reproduce first" : "no"}
-                      </span>
-                    </p>
-                    <p className="label mt-4">Next steps</p>
-                    <ul className="mt-2 list-disc space-y-1 pl-4 text-xs text-muted">
-                      {handoff.data.next_steps.map((s) => <li key={s}>{s}</li>)}
-                    </ul>
-                  </details>
-                )}
-              </section>}
-
-              <section className="panel p-6">
-                <h2 className="flex items-center gap-2 text-sm font-semibold"><Workflow className="h-4 w-4 text-muted" /> Fixes</h2>
-                {i.links.length === 0 && i.related_ci.length === 0 ? (
-                  <p className="mt-3 text-sm text-muted">
-                    No fix has been started yet. The AI agent usually picks up a new problem within a minute.
-                  </p>
-                ) : (
-                  <ul className="mt-3 space-y-2 text-sm">
-                    {i.links.map((l) => (
-                      <li key={l.url}>
-                        <a href={l.url} target="_blank" rel="noreferrer" className="inline-flex items-center gap-1.5 text-accent hover:underline">
-                          {l.kind === "repair_pr" ? <GitPullRequest className="h-3.5 w-3.5" /> : <ExternalLink className="h-3.5 w-3.5" />}
-                          {l.label || l.url}
-                        </a>
-                      </li>
-                    ))}
-                    {i.related_ci.map((c) => (
-                      <li key={c.id} className="rounded-lg border border-line p-3 text-xs" title={`${c.id} · ${c.status} · ${c.stage}`}>
-                        <p className="text-sm font-medium text-ink">{agentRunLabel(c.id, i.id)}</p>
-                        <p className="mt-0.5 text-muted">{AGENT_STATUS[c.status] ?? c.status}</p>
-                        <div className="mt-1.5 flex flex-wrap gap-3">
-                          {c.pr_url && <a className="text-accent hover:underline" href={c.pr_url} target="_blank" rel="noreferrer">See the fix (PR)</a>}
-                          {c.run_url && <a className="text-accent hover:underline" href={c.run_url} target="_blank" rel="noreferrer">Test run on GitHub</a>}
-                        </div>
-                      </li>
-                    ))}
-                  </ul>
-                )}
+            {DEV && (
+              <section className="rounded-lg border border-dashed border-line-strong p-4" aria-labelledby="dev-title">
+                <h2 id="dev-title" className="text-sm font-semibold">Development only</h2>
+                <p className="mb-3 mt-0.5 text-xs text-muted">Demo controls. Not shown in production builds.</p>
                 <MarkFixMerged incident={i} onChange={inc.reload} />
               </section>
-            </div>
+            )}
           </div>
-
-          {!demo && <section className="panel p-6">
-            <h2 className="text-sm font-semibold">What's wrong</h2>
-            {handoff.data && handoff.data.probe_failures.length > 0 ? (
-              <ul className="mt-4 space-y-3">
-                {handoff.data.probe_failures.map((f) => {
-                  const plain = plainFailure(f);
-                  return (
-                    <li key={f.check} className="rounded-lg border border-crit/25 bg-crit/5 p-4 text-sm">
-                      <p className="font-medium text-ink">{plain.title}</p>
-                      <p className="mt-1 text-muted">{plain.explanation}</p>
-                      {plain.rows.length > 0 && (
-                        <div className="scroll-x mt-3">
-                          <table className="w-full min-w-[320px] text-left text-xs">
-                            <thead className="text-faint">
-                              <tr>
-                                <th className="py-1 pr-4 font-medium">Example</th>
-                                <th className="py-1 pr-4 font-medium">Should be</th>
-                                <th className="py-1 font-medium">Actually was</th>
-                              </tr>
-                            </thead>
-                            <tbody>
-                              {plain.rows.map((row) => (
-                                <tr key={row.label} className="border-t border-line/60">
-                                  <td className="py-1.5 pr-4 text-muted">{row.label}</td>
-                                  <td className="py-1.5 pr-4 text-ok">{row.expected}</td>
-                                  <td className="py-1.5 font-medium text-crit">{row.actual}</td>
-                                </tr>
-                              ))}
-                            </tbody>
-                          </table>
-                        </div>
-                      )}
-                    </li>
-                  );
-                })}
-              </ul>
-            ) : (
-              <p className="mt-3 text-sm text-muted">{i.summary}</p>
-            )}
-            <button onClick={() => setShowJson((v) => !v)} className="mt-5 inline-flex items-center gap-1.5 text-xs font-medium text-muted hover:text-ink" aria-expanded={showJson}>
-              <ChevronDown className={`h-3.5 w-3.5 transition ${showJson ? "rotate-180" : ""}`} /> Technical details
-            </button>
-            {showJson && handoff.data && (
-              <div className="mt-3 space-y-3">
-                {handoff.data.probe_failures.map((f) => (
-                  <div key={f.check} className="rounded-lg border border-line p-3 text-xs">
-                    <p className="font-mono font-medium">{f.check}</p>
-                    <p className="mt-1 text-muted">{f.reason}</p>
-                    {f.source && <p className="mt-1 font-mono text-accent">{f.source}</p>}
-                    <div className="scroll-x mt-2 font-mono text-[11.5px]">
-                      <p className="whitespace-nowrap text-ok">expected {JSON.stringify(f.expected)}</p>
-                      <p className="whitespace-nowrap text-crit">actual&nbsp;&nbsp; {JSON.stringify(f.actual)}</p>
-                    </div>
-                  </div>
-                ))}
-                <pre className="scroll-x max-h-[480px] overflow-y-auto rounded-lg border border-line bg-page p-4 font-mono text-[11.5px] leading-relaxed text-muted">
-                  {JSON.stringify(handoff.data, null, 2)}
-                </pre>
-              </div>
-            )}
-          </section>}
-        </div>
-      )}
+        );
+      })()}
     </Shell>
   );
 }

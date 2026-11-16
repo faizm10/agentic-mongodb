@@ -91,6 +91,28 @@ def test_failed_verification_stops_before_pr(db):
     assert gh.create_calls == 0 and "pr" not in inc
 
 
+def test_report_only_records_the_verified_patch_without_touching_github(db):
+    gh = FakeGitHub()
+    iid, _ = o.ingest_failed_run(SAMPLE_RUN, db=db)
+    inc = o.Orchestrator(gh, FakeRepairer(), db=db, publish_repos=set()).run_incident(iid)
+    assert inc["status"] == m.STATUS_REPORTED and inc["stage"] == "patch_verified"
+    assert inc["recommendation"]["kind"] == "verified_patch" and inc["patch"]["diff"]
+    assert gh.create_calls == 0 and "pr_intent" not in inc
+
+
+def test_patch_outside_the_repair_scope_is_not_published(db):
+    class OutOfScope(FakeRepairer):
+        def repair(self, failed_run, similar):
+            return {**super().repair(failed_run, similar), "files": {".github/workflows/ci.yml": "x"},
+                    "changed_files": [".github/workflows/ci.yml"]}
+
+    gh = FakeGitHub()
+    iid, _ = o.ingest_failed_run(SAMPLE_RUN, db=db)
+    inc = o.Orchestrator(gh, OutOfScope(), db=db).run_incident(iid)
+    assert inc["status"] == m.STATUS_NEEDS_REVIEW and "CI configuration" in inc["verification"]["scope_violation"]
+    assert inc["recommendation"]["kind"] == "needs_review" and gh.create_calls == 0
+
+
 def test_crash_after_pr_created_resumes_without_duplicate(db):
     gh = FakeGitHub()
 
@@ -206,7 +228,7 @@ def test_github_adapter_uses_hamza_publisher_and_survives_crash(db):
             assert validate_request(req) is None, validate_request(req)
             Publisher.calls.append(req)
             branch = f"agent/fix-{req.incident_id}"
-            prs.setdefault(branch, NS(number=42, url="https://github.com/x/y/pull/42", state="open"))
+            prs.setdefault(branch, NS(number=42, url="https://github.com/x/y/pull/42", state="open", merge_sha=None))
             return GitHubOperationResult(status=STATUS_VERIFIED, branch=branch, pr_number=42,
                                          pr_url="https://github.com/x/y/pull/42")
 
@@ -222,7 +244,7 @@ def test_github_adapter_uses_hamza_publisher_and_survives_crash(db):
                        worker_id="w1").run_incident(iid)
     req = Publisher.calls[0]
     assert req.incident_id == "9000001-1" and req.base_sha == "a" * 40
-    assert [f.path for f in req.files] == ["shopping/cart.py"]
+    assert [f.path for f in req.files] == ["shopping/src/shopping/cart.py"]
 
     m.incidents(db).update_one({"_id": iid}, {"$set": {
         "lease.expires_at": m.utcnow() - timedelta(seconds=1)}})

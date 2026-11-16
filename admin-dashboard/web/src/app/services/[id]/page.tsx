@@ -88,12 +88,12 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
   const d = detail.data;
 
   return (
-    <Shell meta={detail.meta} updatedAt={detail.updatedAt} error={Boolean(detail.error)}>
+    <Shell meta={detail.meta} updatedAt={detail.updatedAt} error={detail.error}>
       <Link href="/" className="inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink">
         <ArrowLeft className="h-4 w-4" /> All services
       </Link>
       {!d && detail.error ? (
-        <ErrorPanel message={detail.error.message} onRetry={detail.reload} />
+        <ErrorPanel error={detail.error} onRetry={detail.reload} />
       ) : !d ? (
         <div className="mt-6 space-y-5">
           <Skeleton className="h-36" />
@@ -106,7 +106,7 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
               <StatusIcon status={d.current.status} className="h-8 w-8" />
               <div className="min-w-0 flex-1">
                 <div className="flex flex-wrap items-center gap-2.5">
-                  <h1 className="text-xl font-semibold tracking-tight">{d.service.name}</h1>
+                  <h1 className="text-lg font-semibold">{d.service.name}</h1>
                   <StatusPill status={d.current.status} />
                 </div>
                 <p className="mt-1 text-sm text-muted">{d.service.description}</p>
@@ -203,7 +203,7 @@ export default function ServicePage({ params }: { params: Promise<{ id: string }
               {d.incidents.length === 0 ? (
                 <p className="mt-4 text-sm text-muted">No incidents recorded for {d.service.name}.</p>
               ) : (
-                <ul className="mt-5 space-y-5">{d.incidents.map((i) => <IncidentRow key={i.id} incident={i} />)}</ul>
+                <ul className="mt-4 divide-y divide-line border-t border-line">{d.incidents.map((i) => <IncidentRow key={i.id} incident={i} />)}</ul>
               )}
             </section>
             <section className="panel p-6">

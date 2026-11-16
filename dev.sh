@@ -67,7 +67,8 @@ setup() {
   "$ROOT/agents/.venv/bin/python" -m pip install -r "$ROOT/requirements.txt"
   if has_mongodb_uri; then
     ca_file="$(agent_ca_file)"
-    (cd "$ROOT" && env ${ca_file:+SSL_CERT_FILE="$ca_file"} "$ROOT/agents/.venv/bin/python" -m agents.orchestrator setup)
+    (cd "$ROOT" && env ${ca_file:+SSL_CERT_FILE="$ca_file"} "$ROOT/agents/.venv/bin/python" -m agents.orchestrator setup) \
+      || echo "Dependencies are installed; the agent's MongoDB collections are not set up yet (see above)."
   else
     echo "Add MONGODB_URI to .env, then run ./dev.sh setup again to prepare the agent's MongoDB collections."
   fi
@@ -209,7 +210,7 @@ up() {
   wait_ready novaconnect-api "http://127.0.0.1:$connect_api/health" "${PIDS[2]}"
   wait_ready novaconnect-web "http://127.0.0.1:$connect_web" "${PIDS[3]}"
 
-  start opsrelay-api "$ROOT/admin-dashboard/backend" env OPSRELAY_NOVAMART_FRONTEND_URL="http://127.0.0.1:$mart_web" OPSRELAY_NOVAMART_BACKEND_URL="http://127.0.0.1:$mart_api" OPSRELAY_NOVACONNECT_FRONTEND_URL="http://127.0.0.1:$connect_web" OPSRELAY_NOVACONNECT_BACKEND_URL="http://127.0.0.1:$connect_api" "$ROOT/admin-dashboard/backend/.venv/bin/python" -m uptime serve --reload --port "$relay_api"
+  start opsrelay-api "$ROOT/admin-dashboard/backend" env OPSRELAY_ENV=development OPSRELAY_NOVAMART_FRONTEND_URL="http://127.0.0.1:$mart_web" OPSRELAY_NOVAMART_BACKEND_URL="http://127.0.0.1:$mart_api" OPSRELAY_NOVACONNECT_FRONTEND_URL="http://127.0.0.1:$connect_web" OPSRELAY_NOVACONNECT_BACKEND_URL="http://127.0.0.1:$connect_api" "$ROOT/admin-dashboard/backend/.venv/bin/python" -m uptime serve --reload --port "$relay_api"
   start opsrelay-web "$ROOT/admin-dashboard/web" env OPSRELAY_UPTIME_API_URL="http://127.0.0.1:$relay_api" "$ROOT/admin-dashboard/web/node_modules/.bin/next" dev -p "$relay_web"
   wait_ready opsrelay-api "http://127.0.0.1:$relay_api/api/v1/health" "${PIDS[4]}"
   wait_ready opsrelay-web "http://127.0.0.1:$relay_web" "${PIDS[5]}"
@@ -222,7 +223,7 @@ up() {
   skip="$(agent_skip_reason)"
   if [[ -z "$skip" ]]; then
     ca_file="$(agent_ca_file)"
-    start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
+    start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 OPSRELAY_DEMO_FAST_FIX=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
     agent=$((${#PIDS[@]} - 1))
     echo "AI agent worker started. Log: $LOG_DIR/agent-worker.log"
     # Reconciles checkouts interrupted by an incident. It runs separately from the agent and is

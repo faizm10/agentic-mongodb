@@ -1,0 +1,8 @@
+# Only the agent package goes into the worker image (agents/Dockerfile).
+*
+!agents/
+agents/.venv
+agents/tests
+agents/.fake_github.json
+**/__pycache__
+**/.pytest_cache

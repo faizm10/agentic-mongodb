@@ -73,7 +73,7 @@ export function LearningPanel() {
       <section className="panel p-5 sm:p-6" aria-labelledby="learning-title">
         <div className="flex items-center gap-2">
           <Brain className="h-4 w-4 text-accent" />
-          <h2 id="learning-title" className="text-sm font-semibold">AI learning</h2>
+          <h2 id="learning-title" className="text-sm font-semibold">Fix history</h2>
         </div>
         <p className="mt-2 text-sm text-muted">
           The repair agent has no learning history yet. Train it with{" "}
@@ -95,7 +95,7 @@ export function LearningPanel() {
     <section className="panel p-5 sm:p-6" aria-labelledby="learning-title">
       <div className="flex flex-wrap items-center gap-2">
         <Brain className="h-4 w-4 text-accent" />
-        <h2 id="learning-title" className="text-sm font-semibold">AI learning</h2>
+        <h2 id="learning-title" className="text-sm font-semibold">Fix history</h2>
         <span className="ml-auto text-xs text-faint">{t ? `Last trained ${ago(t.at, now)}` : "Not trained yet"}</span>
       </div>
       <p className="mt-1 text-xs text-muted">
@@ -105,7 +105,7 @@ export function LearningPanel() {
       <dl className="tabular mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
         <div className="card p-4">
           <dt className="label">First-pick accuracy</dt>
-          <dd className="mt-1 text-2xl font-semibold text-ink">
+          <dd className="mt-1 text-lg font-semibold text-ink tabular">
             {t ? (
               <>
                 <span className="text-base text-faint line-through decoration-faint/60">{pct0(t.accuracy_before)}</span>{" "}
@@ -119,17 +119,17 @@ export function LearningPanel() {
         </div>
         <div className="card p-4">
           <dt className="label">Fix attempts learned from</dt>
-          <dd className="mt-1 text-2xl font-semibold text-ink">{(data.totals.experiences ?? 0).toLocaleString()}</dd>
+          <dd className="mt-1 text-lg font-semibold text-ink tabular">{(data.totals.experiences ?? 0).toLocaleString()}</dd>
           <dd className="mt-0.5 text-[11px] text-faint">{data.totals.real_experiences ?? 0} from real incidents · rl_experiences</dd>
         </div>
         <div className="card p-4">
           <dt className="label">Training incidents</dt>
-          <dd className="mt-1 text-2xl font-semibold text-ink">{data.totals.mock_incidents ?? 0}</dd>
+          <dd className="mt-1 text-lg font-semibold text-ink tabular">{data.totals.mock_incidents ?? 0}</dd>
           <dd className="mt-0.5 text-[11px] text-faint">mock_incidents · {data.totals.memories ?? 0} fixes in memory</dd>
         </div>
         <div className="card p-4">
           <dt className="label">Atlas Vector Search</dt>
-          <dd className="mt-1 flex items-center gap-2 text-2xl font-semibold text-ink">
+          <dd className="mt-1 flex items-center gap-2 text-lg font-semibold text-ink tabular">
             <Search className="h-5 w-5 text-muted" />
             {data.vector_indexes.length ? `${ready.length}/${data.vector_indexes.length} ready` : "—"}
           </dd>

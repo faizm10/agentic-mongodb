@@ -288,25 +288,56 @@ export type LatencyPoint = { start: string; availability_avg_ms: number | null; 
 
 type Envelope<T> = { data: T; meta: Meta };
 
+/** Where a request failed, so the page can say what to fix. */
+export type ErrorKind = "dashboard_offline" | "api_unreachable" | "not_found" | "rejected" | "api_error" | "bad_response";
+
 export class ApiError extends Error {
-  constructor(public status: number, message: string) {
+  constructor(public status: number, message: string, public kind: ErrorKind) {
     super(message);
   }
 }
 
+/** fetch() itself threw: the browser could not reach the dashboard server that proxies the API. */
+export function networkError(request: string): ApiError {
+  return new ApiError(0, `The dashboard server did not respond to ${request}. Check that the dashboard is still running (port 3300).`, "dashboard_offline");
+}
+
+/** A non-2xx response. The uptime API always answers with {"error": {code, message}}; anything else came from the proxy. */
+export async function responseError(res: Response, request: string): Promise<ApiError> {
+  const body = await res.json().catch(() => null);
+  const err = body?.error as { code?: string; message?: string } | undefined;
+  if (typeof err?.message === "string") {
+    const kind = res.status === 404 ? "not_found" : res.status < 500 ? "rejected" : "api_error";
+    return new ApiError(res.status, `${err.message} (${err.code ?? "ERROR"}, HTTP ${res.status} on ${request})`, kind);
+  }
+  if (res.status === 404) {
+    return new ApiError(404, `${request} does not exist on the running uptime API. It is probably older than this dashboard: restart it.`, "not_found");
+  }
+  if (res.status >= 500) {
+    return new ApiError(res.status, `The uptime API is not answering: the dashboard proxy got HTTP ${res.status} for ${request}. Start the API or check OPSRELAY_UPTIME_API_URL.`, "api_unreachable");
+  }
+  return new ApiError(res.status, `The uptime API rejected ${request} with HTTP ${res.status}.`, "rejected");
+}
+
 async function getJson<T>(path: string): Promise<Envelope<T>> {
+  const request = `GET ${path.split("?")[0]}`;
   let res: Response;
   try {
     res = await fetch(path, { cache: "no-store" });
   } catch {
-    throw new ApiError(0, "Cannot reach the OpsRelay uptime API.");
+    throw networkError(request);
   }
+  if (!res.ok) throw await responseError(res, request);
   const body = await res.json().catch(() => null);
-  if (!res.ok) throw new ApiError(res.status, body?.error?.message ?? `HTTP ${res.status}`);
+  if (!body || !("data" in body)) throw new ApiError(res.status, `The uptime API answered ${request} with something other than JSON data.`, "bad_response");
   return body as Envelope<T>;
 }
 
 export const POLL_MS = 10_000;
+/** The monitor checks every 30s; the status overview refreshes on the same cadence. */
+export const STATUS_POLL_MS = 30_000;
+/** Bug injection, outage simulation and crash controls only exist in development builds. */
+export const DEV = process.env.NODE_ENV !== "production";
 
 /** Poll an endpoint without page reloads. Keeps the last good data while a refresh is in flight or failing. */
 export function usePoll<T>(path: string | null, intervalMs = POLL_MS) {

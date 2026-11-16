@@ -16,8 +16,14 @@ Guarantees
 * Sources   - CI incidents come from Hamza's monitor; live incidents (source="live")
               come from Taha's uptime monitor via agents/intake.py. Both run the same stages.
 * Human     - PRs are drafts and are never merged by the agent. `check_reviews` watches
-  approval    them: merged -> status "resolved"; closed unmerged -> "rejected" and the
+  approval    them: merged -> "awaiting_deployment" (or "resolved" when no deployment check
+              is configured, as in the local demo); closed unmerged -> "rejected" and the
               fix's memory is deactivated so it is never suggested again.
+* Report    - repos outside `publish_repos` stop after patch_verified with status "reported":
+  only        the verified patch is recorded and nothing is written to GitHub.
+* Deployed  - `check_deployments` resolves a merged fix only once the monitored deployment
+              contains the merge commit and a fresh live probe passes. Missing evidence is
+              recorded and the incident stays open.
 
 Teammate contracts (duck-typed)
 -------------------------------
@@ -40,6 +46,8 @@ import json
 import os
 import re
 import socket
+import sys
+import logging
 import time
 import uuid
 from pathlib import Path
@@ -52,6 +60,8 @@ from pymongo.errors import DuplicateKeyError
 from agents import memory
 from agents import mongodb as m
 from agents import rl_policy
+
+log = logging.getLogger("agents.orchestrator")
 
 LEASE_SECONDS = int(os.getenv("LEASE_SECONDS", "120"))
 MAX_ATTEMPTS = int(os.getenv("MAX_ATTEMPTS", "3"))
@@ -71,6 +81,13 @@ class GitHub(Protocol):
 
 class Repairer(Protocol):
     def repair(self, failed_run: dict, similar: list[dict]) -> dict: ...
+
+
+class Deployments(Protocol):
+    """Deployment evidence for merged fixes. Each method returns None when it cannot tell."""
+    def deployed_sha(self, app: str) -> str | None: ...
+    def includes(self, repo: str, fix_sha: str, deployed_sha: str) -> bool | None: ...
+    def probe(self, app: str) -> dict | None: ...  # {"passed": bool, "detail": str}
 
 
 class LeaseLost(Exception):
@@ -188,9 +205,14 @@ def request_stop(incident_id: str, reason: str, by: str, db: Database | None = N
 # --------------------------------------------------------------------------- #
 class Orchestrator:
     def __init__(self, github: GitHub, repairer: Repairer, db: Database | None = None,
-                 worker_id: str | None = None, lease_seconds: int = LEASE_SECONDS):
+                 worker_id: str | None = None, lease_seconds: int = LEASE_SECONDS,
+                 publish_repos: set[str] | None = None, deployments: Deployments | None = None,
+                 reverify=None):
         self.github = github
         self.repairer = repairer
+        self.publish_repos = publish_repos  # None: every repo (local demo); empty: report-only
+        self.deployments = deployments
+        self.reverify = reverify  # (inc, new_base_sha) -> (passed, detail, files) when the base moved
         self.db = m.get_db(db)
         self.worker_id = worker_id or f"{socket.gethostname()}:{os.getpid()}:{uuid.uuid4().hex[:6]}"
         self.lease_seconds = lease_seconds
@@ -211,14 +233,15 @@ class Orchestrator:
             return_document=True,
         )
 
-    def _update(self, iid: str, set_: dict, unset: dict | None = None) -> dict:
-        """Fenced write: only succeeds while we still own the lease. Renews it."""
+    def _update(self, iid: str, set_: dict, unset: dict | None = None, stage: str | None = None) -> dict:
+        """Fenced write: only succeeds while we still own the lease (and, given ``stage``, while
+        the incident is still at that stage, so a stale result never overwrites a newer one)."""
         update: dict[str, Any] = {"$set": {**set_, "lease": self._lease(),
                                            "updated_at": m.utcnow()}}
         if unset:
             update["$unset"] = unset
-        doc = m.incidents(self.db).find_one_and_update(
-            {"_id": iid, "lease.owner": self.worker_id}, update, return_document=True)
+        query = {"_id": iid, "lease.owner": self.worker_id, **({"stage": stage} if stage else {})}
+        doc = m.incidents(self.db).find_one_and_update(query, update, return_document=True)
         if doc is None:
             raise LeaseLost(iid)
         return doc
@@ -227,8 +250,10 @@ class Orchestrator:
                  evidence: dict | None = None) -> dict:
         now = m.utcnow()
         doc = self._update(inc["_id"], {**(fields or {}), "stage": stage,
-                                        f"stages.{stage}": {"at": now, "by": self.worker_id}})
+                                        f"stages.{stage}": {"at": now, "by": self.worker_id}},
+                           stage=inc["stage"])
         m.log_step(inc["_id"], stage, "completed", self.worker_id, evidence, db=self.db)
+        log.info("stage completed", extra={"incident_id": inc["_id"], "stage": stage})
         print(f"  ✔ {stage}")
         return doc
 
@@ -283,6 +308,7 @@ class Orchestrator:
         nxt = m.STAGES[min(m.STAGES.index(inc["stage"]) + 1, len(m.STAGES) - 1)]
         m.log_step(inc["_id"], nxt, "failed", self.worker_id,
                    {"error": f"{type(err).__name__}: {err}", "attempt": attempts}, db=self.db)
+        log.warning("stage failed: %s", err, extra={"incident_id": inc["_id"], "stage": nxt})
         print(f"  ✘ {nxt} failed (attempt {attempts}/{MAX_ATTEMPTS}): {err}")
         try:
             if attempts >= MAX_ATTEMPTS:
@@ -292,6 +318,8 @@ class Orchestrator:
             return m.incidents(self.db).find_one_and_update(
                 {"_id": inc["_id"], "lease.owner": self.worker_id},
                 {"$set": {"attempts": attempts, "last_error": str(err),
+                          "blocked": {"stage": nxt, "reason": f"{type(err).__name__}: {err}"[:500],
+                                      "attempt": attempts, "max_attempts": MAX_ATTEMPTS},
                           "updated_at": m.utcnow()}, "$unset": {"lease": ""}},
                 return_document=True)
         except LeaseLost:
@@ -343,9 +371,15 @@ class Orchestrator:
                         "test_output": (result.get("test_output") or "")[-4000:],
                         "verified_at": m.utcnow()}
         self._rl_reward(inc, patch, verification["tests_passed"])
+        scope = _scope_violation(inc["app"], patch) if verification["tests_passed"] else None
+        if scope:
+            verification.update(tests_passed=False, scope_violation=scope)
+            result = {**result, "reason": f"final diff is outside the repair scope: {scope}"}
+        recommendation = _recommendation(result, verification["tests_passed"])
         if not verification["tests_passed"]:
             # Don't open a PR for an unverified patch: leave it for a human.
-            inc = self._update(inc["_id"], {"patch": patch, "verification": verification})
+            inc = self._update(inc["_id"], {"patch": patch, "verification": verification,
+                                            "recommendation": recommendation})
             m.log_step(inc["_id"], "patch_verified", "failed", self.worker_id,
                        {"tests_passed": False, "changed_files": patch.get("changed_files")},
                        db=self.db)
@@ -353,11 +387,16 @@ class Orchestrator:
             reason = result.get("reason") or "patch failed verification"
             return self._finish(inc, m.STATUS_NEEDS_REVIEW, f"patch failed verification: {reason}"[:2000])
         return self._advance(inc, "patch_verified",
-                             {"patch": patch, "verification": verification},
+                             {"patch": patch, "verification": verification, "recommendation": recommendation},
                              {"tests_passed": True, "changed_files": patch.get("changed_files"),
                               "summary": patch.get("summary")})
 
     def _save_pr_intent(self, inc: dict) -> dict:
+        if self.publish_repos is not None and inc["repo"] not in self.publish_repos:
+            m.log_step(inc["_id"], "report", "completed", self.worker_id,
+                       {"recommendation": (inc.get("recommendation") or {}).get("kind")}, db=self.db)
+            return self._finish(inc, m.STATUS_REPORTED,
+                                f"report-only: draft PRs are not enabled for {inc['repo']}")
         intent = {
             "branch": branch_for(inc),
             "base_sha": inc["commit_sha"],
@@ -372,6 +411,10 @@ class Orchestrator:
     def _confirm_pr(self, inc: dict) -> dict:
         intent = inc["pr_intent"]
         existing = self.github.find_pr(inc["repo"], intent["branch"])
+        if not existing:
+            inc, intent = self._rebase_if_moved(inc, intent)
+            if inc["status"] != m.STATUS_OPEN:
+                return inc
         if existing:
             # Recovery path: GitHub already has it (we crashed after creating it).
             print(f"  ↺ found existing PR #{existing['number']} for {intent['branch']}"
@@ -392,6 +435,27 @@ class Orchestrator:
         return self._advance(inc, "pr_confirmed", {"pr": _pr_fields(confirmed)},
                              {"pr_number": confirmed["number"], "url": confirmed["url"],
                               "recovered_existing": False})
+
+    def _rebase_if_moved(self, inc: dict, intent: dict) -> tuple[dict, dict]:
+        """Before the first publish: if the base branch moved past the verified commit, verify
+        the same patch on the new head and publish from there, or hand it to a human."""
+        if self.reverify is None:
+            return inc, intent
+        head = getattr(self.github, "base_head", lambda repo: None)(inc["repo"])
+        if not head or head == intent["base_sha"]:
+            return inc, intent
+        passed, detail, files = self.reverify(inc, head)
+        m.log_step(inc["_id"], "pr_confirmed", "completed" if passed else "failed", self.worker_id,
+                   {"rebased_to": head, "previous_base": intent["base_sha"], "detail": detail[-500:]}, db=self.db)
+        if not passed:
+            return self._finish(inc, m.STATUS_NEEDS_REVIEW,
+                                f"base moved to {head[:7]} and the patch no longer verifies there: {detail}"[:2000]), intent
+        intent = {**intent, "base_sha": head, "rebased_from": intent["base_sha"]}
+        patch_files = {**((inc.get("patch") or {}).get("files") or {}), **files}
+        inc = self._update(inc["_id"], {"pr_intent": intent, "patch.files": patch_files,
+                                        "verification.rebased": {"base_sha": head, "at": m.utcnow(),
+                                                                 "detail": detail[-1000:]}})
+        return inc, intent
 
     def _save_memory(self, inc: dict) -> dict:
         mem_id = memory.remember_fix(inc, db=self.db)
@@ -427,11 +491,13 @@ class Orchestrator:
             state = pr.get("state")
             if state not in ("merged", "closed"):
                 continue
-            status = m.STATUS_RESOLVED if state == "merged" else m.STATUS_REJECTED
+            merged_status = m.STATUS_AWAITING_DEPLOYMENT if self.deployments else m.STATUS_RESOLVED
+            status = merged_status if state == "merged" else m.STATUS_REJECTED
             now = m.utcnow()
             res = m.incidents(self.db).update_one(
                 {"_id": inc["_id"], "status": m.STATUS_AWAITING_MERGE},
-                {"$set": {"status": status, "review": {"pr_state": state, "recorded_at": now},
+                {"$set": {"status": status, "review": {"pr_state": state, "recorded_at": now,
+                                                       "merge_sha": pr.get("merge_sha")},
                           "status_reason": f"PR #{pr.get('number')} {state} by a human", "updated_at": now}})
             if not res.modified_count:
                 continue
@@ -445,6 +511,56 @@ class Orchestrator:
             print(f"{'✔' if state == 'merged' else '✘'} {inc['_id']}: PR #{pr.get('number')} {state} -> {status}")
             decided.append((inc["_id"], status))
         return decided
+
+    # ---- deployment verification ---------------------------------------- #
+    def check_deployments(self) -> list[tuple[str, str]]:
+        """Resolve merged fixes once the deployment contains them and a fresh probe passes.
+
+        Patch verification, PR review, deployment and live recovery are recorded separately
+        (``verification``, ``review``, ``deployment``, ``live_recovery``). Missing evidence is
+        recorded as ``unavailable`` and the incident stays open."""
+        if self.deployments is None:
+            return []
+        changed = []
+        for inc in m.incidents(self.db).find({"status": m.STATUS_AWAITING_DEPLOYMENT}):
+            now = m.utcnow()
+            fix = (inc.get("review") or {}).get("merge_sha")
+            deployed = self.deployments.deployed_sha(inc["app"])
+            includes = self.deployments.includes(inc["repo"], fix, deployed) if fix and deployed else None
+            if includes is None:
+                why = ("the merge commit is unknown" if not fix else
+                       f"no deployed version reported for {inc['app']}" if not deployed else
+                       f"could not compare {deployed[:7]} with the fix {fix[:7]}")
+                deployment = {"state": "unavailable", "reason": why, "deployed_sha": deployed, "checked_at": now}
+            elif not includes:
+                deployment = {"state": "not_deployed", "reason": f"deployed {deployed[:7]} does not contain {fix[:7]}",
+                              "deployed_sha": deployed, "checked_at": now}
+            else:
+                deployment = {"state": "verified", "deployed_sha": deployed, "fix_sha": fix, "checked_at": now}
+            fields: dict = {"deployment": deployment}
+            status = m.STATUS_AWAITING_DEPLOYMENT
+            if deployment["state"] == "verified":
+                probe = self.deployments.probe(inc["app"])
+                fields["live_recovery"] = ({"state": "unavailable", "reason": "no live probe result", "checked_at": now}
+                                           if probe is None else
+                                           {"state": "verified" if probe["passed"] else "failing",
+                                            "detail": str(probe.get("detail") or "")[:1000], "checked_at": now})
+                if probe and probe["passed"]:
+                    status = m.STATUS_RESOLVED
+            reason = (f"deployment {deployment['state']}" + (f": {deployment['reason']}" if deployment.get("reason") else "")
+                      + (f"; live probe {fields['live_recovery']['state']}" if "live_recovery" in fields else ""))
+            res = m.incidents(self.db).update_one(
+                {"_id": inc["_id"], "status": m.STATUS_AWAITING_DEPLOYMENT},
+                {"$set": {**fields, "status": status, "status_reason": reason, "updated_at": now}})
+            prev = ((inc.get("deployment") or {}).get("state"), (inc.get("live_recovery") or {}).get("state"))
+            now_states = (deployment["state"], (fields.get("live_recovery") or {}).get("state"))
+            if res.modified_count and now_states != prev:
+                m.log_step(inc["_id"], "deployment", "completed" if status == m.STATUS_RESOLVED else "started",
+                           self.worker_id, {"deployment": deployment["state"], "live_recovery": now_states[1],
+                                            "deployed_sha": deployed, "reason": reason}, db=self.db)
+                log.info(reason, extra={"incident_id": inc["_id"], "stage": "deployment"})
+                changed.append((inc["_id"], status))
+        return changed
 
     def run_forever(self, monitor, poll_seconds: int = POLL_SECONDS, live=None,
                     live_intake=None) -> None:
@@ -469,6 +585,7 @@ class Orchestrator:
                         print(f"＋ new live incident {iid}")
                 self.run_pending()
                 self.check_reviews()
+                self.check_deployments()
             except Exception as e:  # noqa: BLE001 - keep the worker alive
                 print(f"[worker] loop error: {e}")
             if live is not None:
@@ -477,6 +594,32 @@ class Orchestrator:
                 except Exception as e:  # noqa: BLE001 - a live-check bug must not stop CI handling
                     print(f"[worker] live check error: {e}")
             time.sleep(poll_seconds)
+
+
+def _scope_violation(app_name: str, patch: dict) -> str | None:
+    """Why the final diff may not ship: every file must be an allowed source file, or a new
+    regression test the verifier accepted."""
+    from agents.contracts import load_app_config
+    from agents.patcher import path_violation
+    from agents.verifier import added_test_violation
+
+    app = load_app_config(app_name)
+    files = patch.get("files") or {}
+    added = set(patch.get("added_tests") or [])
+    for path in sorted({*files, *(patch.get("changed_files") or [])}):
+        why = (added_test_violation(path, files.get(path, ""), app) if path in added
+               else path_violation(path, app))
+        if why:
+            return why
+    return None
+
+
+def _recommendation(result: dict, verified: bool) -> dict:
+    """The structured recommendation: a verified patch, an operational step, or a human review."""
+    rec = dict(result.get("recommendation") or {})
+    kind = ("verified_patch" if verified else
+            "ops_recommendation" if rec.get("action") == "operational_step" else "needs_review")
+    return {**rec, "kind": kind, "reason": (result.get("reason") or rec.get("detail") or "")[:2000]}
 
 
 def _pr_fields(pr: dict) -> dict:
@@ -557,7 +700,11 @@ class GitHubAdapter:
         pr = self.client.find_pr(branch, state="all")
         if pr is None:
             return None
-        return {"number": pr.number, "url": pr.url, "state": pr.state}
+        return {"number": pr.number, "url": pr.url, "state": pr.state, "merge_sha": pr.merge_sha}
+
+    def base_head(self, repo: str) -> str | None:
+        branch = self.client.get_branch(self.client.config.base_branch)
+        return branch.sha if branch else None
 
     def open_draft_pr(self, repo: str, branch: str, base_sha: str, title: str,
                       body: str, patch: dict) -> dict:
@@ -663,8 +810,16 @@ def main() -> None:
     a = p.parse_args()
 
     if a.cmd == "setup":
-        m.ensure_setup()
-        rl_policy.ensure_setup()
+        from pymongo.errors import ConfigurationError, ServerSelectionTimeoutError
+        try:
+            m.ensure_setup()
+            rl_policy.ensure_setup()
+        except ServerSelectionTimeoutError:
+            # DNS resolved but no member answered: almost always the Atlas IP Access List.
+            sys.exit("MongoDB setup skipped: the cluster did not answer on port 27017. Add this machine's public IP "
+                     "(curl https://api.ipify.org) under Atlas > Security > Network Access, then run ./dev.sh setup again.")
+        except ConfigurationError as exc:
+            sys.exit(f"MongoDB setup skipped: MONGODB_URI is not usable ({exc}). Copy it again from Atlas > Connect.")
         print("setup complete")
     elif a.cmd == "worker":
         orch, monitor = _build_real()

@@ -1,83 +1,50 @@
 "use client";
 
 import Link from "next/link";
-import { ArrowUpRight, CheckCircle2, GitPullRequest, Siren } from "lucide-react";
 import { type Incident, isDemoIncident } from "@/lib/api";
-import { FAILURE_LABELS, ROUTE_LABELS, clock, duration, useNow } from "@/lib/format";
-import { IncidentBadge } from "./recovery";
-import { Badge, StatusIcon } from "./ui";
+import { FAILURE_LABELS, clock, duration, useNow } from "@/lib/format";
+import { phase } from "@/lib/phase";
+import { Badge } from "./ui";
 
-export function RouteBadge({ route }: { route: Incident["investigation_route"] }) {
-  const r = ROUTE_LABELS[route];
-  return (
-    <Badge tone="neutral" title={r.hint}>{r.label}</Badge>
-  );
-}
-
+/** One incident as a keyboard-focusable row: what broke, its phase, and how long it has run. */
 export function IncidentRow({ incident }: { incident: Incident }) {
   const now = useNow();
   const open = incident.state === "open";
   const live = open ? (now - new Date(incident.started_at).getTime()) / 1000 : incident.duration_seconds;
-  const pr = incident.links.find((l) => l.kind === "repair_pr");
+  const p = phase(incident);
   const demo = isDemoIncident(incident);
   return (
-    <li className="relative pl-7">
-      <span className="absolute left-0 top-1 flex h-4 w-4 items-center justify-center">
-        {open ? <StatusIcon status={incident.severity} className="h-4 w-4" /> : <CheckCircle2 className="h-4 w-4 text-ok" />}
-      </span>
-      <Link href={`/incidents/${encodeURIComponent(incident.id)}`} className="group -m-3 block rounded-lg p-3 transition hover:bg-hover">
-        <div className="flex flex-wrap items-center gap-x-2 gap-y-1">
-          <span className="font-medium text-ink">{incident.title}</span>
-          <IncidentBadge incident={incident} />
-          {!demo && <RouteBadge route={incident.investigation_route} />}
-          <ArrowUpRight className="ml-auto h-4 w-4 text-faint opacity-0 transition group-hover:opacity-100" />
+    <li>
+      <Link href={`/incidents/${encodeURIComponent(incident.id)}`}
+        className="block px-4 py-3 transition hover:bg-hover focus-visible:bg-hover sm:px-5 md:grid md:grid-cols-[minmax(0,1fr)_auto_9rem] md:items-center md:gap-6">
+        <div className="min-w-0">
+          <p className="truncate text-sm font-medium text-ink">{incident.title.startsWith(incident.service_name) ? incident.title : `${incident.service_name} · ${incident.title}`}</p>
+          <p className="truncate text-xs text-muted">
+            {demo ? `Service ${open ? incident.severity : "recovered"}` : FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}
+            {" · "}{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}
+          </p>
         </div>
-        <p className="mt-1 line-clamp-2 text-sm text-muted">{demo ? `Service status: ${incident.state === "open" ? incident.severity : "recovered"}.` : incident.summary}</p>
-        <p className="tabular mt-2 flex flex-wrap gap-x-4 gap-y-1 text-xs text-faint">
-          {!demo && <span>{FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}</span>}
-          <span>Started {clock(incident.started_at, true)}</span>
-          {incident.resolved_at && <span>Recovered {clock(incident.resolved_at, true)}</span>}
-          <span className={open ? "font-semibold text-ink" : ""}>{open ? `Ongoing for ${duration(live)}` : `Lasted ${duration(live)}`}</span>
-          <span>{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}</span>
-          {pr && (
-            <span className="inline-flex items-center gap-1 text-accent">
-              <GitPullRequest className="h-3 w-3" /> Repair PR
-            </span>
-          )}
-          <span className="font-mono text-faint">{incident.id}</span>
+        <div className="mt-1.5 md:mt-0"><Badge tone={p.tone}>{p.label}</Badge></div>
+        <p className="tabular mt-1.5 text-xs text-muted md:mt-0 md:text-right">
+          {clock(incident.started_at, true)}
+          <span className={`block ${open ? "text-ink" : "text-faint"}`}>{open ? `ongoing ${duration(live)}` : `lasted ${duration(live)}`}</span>
         </p>
       </Link>
     </li>
   );
 }
 
-export function IncidentTimeline({ active, recent }: { active: Incident[]; recent: Incident[] }) {
+export function IncidentList({ title, incidents, empty }: { title: string; incidents: Incident[]; empty: string }) {
+  const id = `${title.toLowerCase().replace(/\W+/g, "-")}-title`;
   return (
-    <section className="panel p-5 sm:p-6" aria-labelledby="incidents-title">
-      <div className="flex items-center gap-2">
-        <Siren className="h-4 w-4 text-muted" />
-        <h2 id="incidents-title" className="text-sm font-semibold">Incidents</h2>
-        <span className="ml-auto text-xs text-faint">Detected by the uptime monitor</span>
-      </div>
-      {active.length === 0 && recent.length === 0 ? (
-        <div className="mt-6 flex items-center gap-3 rounded-lg border border-dashed border-line-strong p-5 text-sm text-muted">
-          <CheckCircle2 className="h-5 w-5 text-ok" /> No incidents recorded yet.
-        </div>
+    <section aria-labelledby={id}>
+      <h2 id={id} className="mb-2 text-sm font-semibold">
+        {title}{incidents.length > 0 && <span className="tabular ml-1.5 font-normal text-muted">{incidents.length}</span>}
+      </h2>
+      {incidents.length === 0 ? (
+        <p className="panel px-4 py-3 text-sm text-muted sm:px-5">{empty}</p>
       ) : (
-        <>
-          {active.length > 0 && (
-            <>
-              <p className="label mt-5">Active</p>
-              <ul className="mt-3 space-y-5 border-l border-line pl-0">{active.map((i) => <IncidentRow key={i.id} incident={i} />)}</ul>
-            </>
-          )}
-          {recent.length > 0 && (
-            <>
-              <p className="label mt-6">Recently resolved</p>
-              <ul className="mt-3 space-y-5">{recent.map((i) => <IncidentRow key={i.id} incident={i} />)}</ul>
-            </>
-          )}
-        </>
+        <ul className="panel divide-y divide-line overflow-hidden">{incidents.map((i) => <IncidentRow key={i.id} incident={i} />)}</ul>
       )}
     </section>
   );

@@ -43,10 +43,10 @@ class FakeGitHub:
         self._save(prs)
         return prs[key]
 
-    def set_state(self, repo: str, branch: str, state: str) -> None:
+    def set_state(self, repo: str, branch: str, state: str, merge_sha: str | None = None) -> None:
         """Simulate a human merging ("merged") or closing ("closed") the PR."""
         prs = self._load()
-        prs[f"{repo}:{branch}"]["state"] = state
+        prs[f"{repo}:{branch}"].update(state=state, merge_sha=merge_sha)
         self._save(prs)
 
 
@@ -61,10 +61,10 @@ class FakeRepairer:
         return {
             "tests_passed": self.passes,
             "test_output": "5 passed in 0.12s" if self.passes else "1 failed, 4 passed",
-            "diff": "--- a/shopping/cart.py\n+++ b/shopping/cart.py\n-    return total\n"
+            "diff": "--- a/shopping/src/shopping/cart.py\n+++ b/shopping/src/shopping/cart.py\n-    return total\n"
                     "+    return round(total * (1 - discount), 2)\n",
-            "files": {"shopping/cart.py": "# patched\n"},
-            "changed_files": ["shopping/cart.py"],
+            "files": {"shopping/src/shopping/cart.py": "# patched\n"},
+            "changed_files": ["shopping/src/shopping/cart.py"],
             "summary": f"Apply discount before rounding (informed by: {hint})",
             "root_cause": "discount not applied in cart total",
         }

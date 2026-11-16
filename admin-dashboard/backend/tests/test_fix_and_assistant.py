@@ -28,7 +28,7 @@ def env(tmp_path, settings, clock, apps, monkeypatch):
         requests.append(request)
         return httpx.Response(200, json={"choices": [{"message": {"content": "NovaMart is overcharging. "}}]})
 
-    client = TestClient(create_app(storage, settings, clock=clock, assistant_transport=httpx.MockTransport(openai)))
+    client = TestClient(create_app(storage, settings, clock=clock, assistant_transport=httpx.MockTransport(openai), demo_controls=True))
     incident_id = storage.list_incidents(state="open")[0].id
     storage.db["incidents"].insert_one({
         "_id": f"repo#{incident_id}", "source": "live", "live": {"uptime_incident_id": incident_id},
