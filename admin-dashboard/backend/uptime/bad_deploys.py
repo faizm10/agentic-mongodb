@@ -8,6 +8,14 @@ uptime probe catches it, and the agent fixes the pushed commit and opens a PR.
 A ``provider:`` scenario is a third-party outage instead (the payment provider is down):
 it flips the app's demo outage flag and ships no code, so the agent has nothing to fix.
 
+A cross-service scenario ships a regression *and* starts a controlled fault in another
+app. ``checkout-confirmation`` makes NovaMart report a failed checkout when the order
+confirmation to NovaConnect times out, then makes NovaConnect's confirmations time out.
+Its regression is defined here rather than in an app's ``inject_bug.py``, because the
+agent reads those catalogs (agents/live_repair.py) and must find this one from evidence.
+Applying the merged fix (``restore(..., keep_faults=True)``) leaves NovaConnect's fault
+running: ending it is a separate operational step.
+
 Restore applies the reverse change to the checkout and, if the bug is still on the
 branch (the agent's PR was not merged yet), pushes a revert commit.
 
@@ -26,6 +34,7 @@ import sys
 import tempfile
 import threading
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from . import demo_outages
@@ -34,8 +43,18 @@ from .demo_outages import repo_root
 APPS = {"novamart": "shopping", "novaconnect": "message-platform"}
 # The dashboard sends a scenario number, so nothing it shows or sends names the bug.
 SCENARIOS = {
-    "novamart": ("images", "provider:payment", "stock"),
+    "novamart": ("images", "provider:payment", "stock", "checkout-confirmation"),
     "novaconnect": ("send", "receive", "both"),
+}
+CROSS_SERVICE = {
+    "checkout-confirmation": SimpleNamespace(
+        file="backend/app/checkout.py",
+        original="            return CheckoutResult(order, attempt, replayed)  # the order is saved; recovery resends "
+                 "the confirmation\n",
+        buggy="            raise ConfirmationUnavailableError(exc.message, details={\"order_id\": order[\"order_id\"], "
+              "**exc.to_dict()}) from exc\n",
+        fault=("novaconnect", "confirmation_timeout"),
+    ),
 }
 # Bland, like a routine cleanup: neither the agent nor an audience should learn where
 # the bug is from the commit message.
@@ -51,6 +70,7 @@ COMMIT_MESSAGES = {
     "send": "Tidy up message sending",
     "receive": "Clean up history query",
     "both": "Refactor participant lookup",
+    "checkout-confirmation": "Simplify checkout error handling",
 }
 GIT_TIMEOUT = 60
 _lock = threading.Lock()
@@ -87,8 +107,12 @@ def catalog(service_id: str) -> dict[str, Any]:
     return module.BUGS
 
 
+def _bug(service_id: str, bug_key: str):
+    return CROSS_SERVICE.get(bug_key) or catalog(service_id)[bug_key]
+
+
 def ship(service_id: str, scenario: int) -> None:
-    """Ship scenario 1-3 of this app's ``SCENARIOS``."""
+    """Ship scenario 1-N of this app's ``SCENARIOS``."""
     with _lock:
         keys = SCENARIOS.get(service_id, ())
         if not 1 <= scenario <= len(keys):
@@ -103,7 +127,7 @@ def ship(service_id: str, scenario: int) -> None:
             state[service_id] = {"outage": outage}
             _save_state(state)
             return
-        bug = catalog(service_id)[bug_key]
+        bug = _bug(service_id, bug_key)
         path = f"{APPS[service_id]}/{bug.file}"
         local = repo_root() / path
         text = local.read_text(encoding="utf-8")
@@ -115,11 +139,18 @@ def ship(service_id: str, scenario: int) -> None:
         _push(commit)
         _write(local, text.replace(bug.original, bug.buggy, 1))
         state[service_id] = {"bug": bug_key, "commit": commit, "branch": branch()}
+        fault = getattr(bug, "fault", None)
+        if fault:
+            demo_outages.activate(*fault)
+            state[service_id]["fault"] = list(fault)
         _save_state(state)
 
 
-def restore(service_id: str) -> None:
-    """Undo the live bad deploy for this app, if any. Safe to repeat."""
+def restore(service_id: str, *, keep_faults: bool = False) -> None:
+    """Undo the live bad deploy for this app, if any. Safe to repeat.
+
+    ``keep_faults`` applies only the code fix and leaves a cross-service fault running.
+    """
     with _lock:
         if service_id not in APPS:
             raise ValueError("Unknown demo service")
@@ -132,7 +163,9 @@ def restore(service_id: str) -> None:
             del state[service_id]
             _save_state(state)
             return
-        bug = catalog(service_id)[entry["bug"]]
+        bug = _bug(service_id, entry["bug"])
+        if entry.get("fault") and not keep_faults:
+            demo_outages.clear(entry["fault"][0])
         path = f"{APPS[service_id]}/{bug.file}"
         local = repo_root() / path
         text = local.read_text(encoding="utf-8")
