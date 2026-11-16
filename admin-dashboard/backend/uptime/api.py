@@ -20,7 +20,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, assistant, bad_deploys, demo_outages
+from . import __version__, assistant, bad_deploys, demo_outages, demo_traffic, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -86,10 +86,17 @@ class ServiceOverview(BaseModel):
     bars: list[dict[str, Any]] | None = None
 
 
+RecoveryStatus = Literal["not_needed", "waiting", "reconciling", "needs_review", "complete"]
+
+
 class IncidentOut(Incident):
     duration_seconds: float
     service_name: str
     related_ci: list[dict[str, Any]] = Field(default_factory=list)
+    # Two separate statuses: the service's health now, and the recovery of what the outage interrupted.
+    service_health: Status = "unknown"
+    recovery_status: RecoveryStatus = "not_needed"
+    recovery: dict[str, Any] | None = None
 
 
 class MonitoringHealth(BaseModel):
@@ -207,15 +214,19 @@ class ServicePatch(BaseModel):
 
 
 class DemoOutageIn(BaseModel):
-    scenario: Literal["payment", "images", "inventory", "send", "receive", "both"]
+    scenario: Literal["payment", "images", "inventory", "send", "receive", "both", "confirmation_timeout"]
 
 
 class BadDeployIn(BaseModel):
-    scenario: int = Field(ge=1, le=3)
+    scenario: int = Field(ge=1, le=4)
 
 
 class FixConfirmationIn(BaseModel):
     resolved: bool
+
+
+class DemoCheckoutsIn(BaseModel):
+    count: int = Field(default=4, ge=1, le=10)
 
 
 # -------------------------------------------------------------------- the app
@@ -323,8 +334,20 @@ def create_app(
                     "run_url": doc.get("html_url"), "pr_url": (doc.get("pr") or {}).get("url"),
                     "commit_sha": doc.get("commit_sha"), "created_at": doc.get("created_at"),
                 })
+        recovery = storage.get_recovery(incident.id) if (related or incident.recovery_phase) else None
+        state = storage.get_state(incident.service_id)
         return IncidentOut(**incident.model_dump(), duration_seconds=incident.elapsed_seconds(now),
-                           service_name=names.get(incident.service_id, incident.service_id), related_ci=related_ci)
+                           service_name=names.get(incident.service_id, incident.service_id), related_ci=related_ci,
+                           service_health=state.status if state else "unknown",
+                           recovery_status=recovery_status(incident, recovery), recovery=recovery)
+
+    def recovery_status(incident: Incident, recovery: dict[str, Any] | None) -> str:
+        if incident.recovery_phase == "recovering":
+            phase = (recovery or {}).get("phase")
+            if phase is None or phase == "collecting":
+                return "waiting"
+            return phase if phase in ("needs_review", "complete") else "reconciling"
+        return "complete" if recovery and recovery.get("phase") == "complete" else "not_needed"
 
     def agent_activity(incident: Incident, now: datetime) -> AgentActivity:
         name = next((s.name for s in services() if s.id == incident.service_id), incident.service_id)
@@ -487,6 +510,12 @@ def create_app(
         items = storage.list_incidents(service_id=service_id, state=None if state == "all" else state, limit=limit)
         return ok([incident_out(i, now) for i in items])
 
+    @app.get("/api/v1/incidents/{incident_id}/walkthrough", response_model=Envelope[dict[str, Any]])
+    def incident_walkthrough(incident_id: str):
+        """What the monitor, the repair agent and the recovery worker recorded, as ordered steps."""
+        incident = incident_or_404(incident_id)
+        return ok(walkthrough.build(incident, storage.get_agent_run(incident_id), storage.get_recovery(incident_id), clock()))
+
     def incident_or_404(incident_id: str) -> Incident:
         incident = storage.get_incident(incident_id)
         if incident is None:
@@ -566,6 +595,11 @@ def create_app(
         storage.request_check(clock())
         return ok({"service_id": service_id, "requested": True})
 
+    @app.post("/api/v1/demo/checkouts", response_model=Envelope[list[dict[str, Any]]])
+    async def demo_checkouts(body: DemoCheckoutsIn):
+        """Place customer checkouts on NovaMart (each retried once with the same checkout ID on failure)."""
+        return ok(await demo_traffic.place_checkouts(service_or_404("novamart"), body.count))
+
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
     def patch_service(service_id: str, body: ServicePatch):
         service_or_404(service_id)
@@ -605,7 +639,7 @@ def create_app(
             raise HTTPException(409, "The repair PR for this incident has not been merged yet.")
         if body.resolved and incident.service_id in bad_deploys.APPS:
             try:
-                bad_deploys.restore(incident.service_id)
+                bad_deploys.restore(incident.service_id, keep_faults=True)
             except bad_deploys.BadDeployError as exc:
                 raise HTTPException(409, str(exc)) from exc
             except OSError as exc:
@@ -633,7 +667,7 @@ def create_app(
             raise HTTPException(409, "This incident is already resolved.")
         if incident.service_id in bad_deploys.APPS:
             try:
-                bad_deploys.restore(incident.service_id)
+                bad_deploys.restore(incident.service_id, keep_faults=True)
             except bad_deploys.BadDeployError as exc:
                 raise HTTPException(409, str(exc)) from exc
             except OSError as exc:
