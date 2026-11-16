@@ -14,7 +14,6 @@ from .conftest import SERVICES, make_mongo, signed_in
 
 @pytest.fixture
 def env(tmp_path, settings, clock, apps, monkeypatch):
-    monkeypatch.setenv("OPSRELAY_DEMO_REPO_ROOT", str(tmp_path))  # no bad deploy is live
     storage = make_mongo()
     monitor = UptimeMonitor(storage, SERVICES, interval_seconds=30, clock=clock, sleep=clock.sleep,
                             transport=apps.transport(), worker_id="test-worker")
