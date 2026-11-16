@@ -12,14 +12,15 @@ Isolation model:
 - New regression tests (``added_tests``) may only be ``<root>/<test_dir>/test_opsrelay_*.py``
   files that do not exist yet; they are written into the export before anything runs.
 
-With ``OPSRELAY_VERIFIER_RUNNER=docker`` each pytest run is a disposable container instead:
+When Docker is available (``OPSRELAY_VERIFIER_RUNNER=auto`` with an image, or ``=docker``) each pytest run is a disposable container instead:
 no network, a read-only root, all capabilities dropped, an unprivileged user and CPU, memory
-and process limits (``OPSRELAY_VERIFIER_IMAGE``, ``_CPUS``, ``_MEMORY``). The default ``process``
-runner is process-level isolation only: tests can still reach the network.
+and process limits (``OPSRELAY_VERIFIER_IMAGE``, ``_CPUS``, ``_MEMORY``). Without Docker the ``process``
+runner is used: process-level isolation only, so tests can still reach the network and the filesystem.
 """
 
 from __future__ import annotations
 
+import functools
 import io
 import os
 import re
@@ -328,8 +329,21 @@ def _sandbox_env(tmp: Path) -> dict[str, str]:
     }
 
 
+@functools.cache
+def docker_reachable() -> bool:
+    try:
+        return subprocess.run(["docker", "version", "--format", "{{.Server.Version}}"],
+                              capture_output=True, timeout=15).returncode == 0
+    except (OSError, subprocess.TimeoutExpired):
+        return False
+
+
 def runner() -> str:
-    return os.getenv("OPSRELAY_VERIFIER_RUNNER", "process")
+    """``auto`` (default): containers when Docker is reachable and an image is set, else plain processes."""
+    chosen = os.getenv("OPSRELAY_VERIFIER_RUNNER", "auto")
+    if chosen == "auto":
+        return "docker" if os.getenv("OPSRELAY_VERIFIER_IMAGE") and docker_reachable() else "process"
+    return chosen
 
 
 def _docker_command(app: AppConfig, pytest: list[str], name: str) -> list[str]:
