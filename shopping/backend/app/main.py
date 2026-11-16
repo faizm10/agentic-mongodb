@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Query, Request
+from fastapi import FastAPI, Header, Query, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -23,9 +23,10 @@ from fastapi.responses import JSONResponse
 from . import __version__, demo_outage, pricing
 from .catalog import Catalog, Product
 from .checkout import CartItem, CheckoutService, quote_to_dict
+from .confirmations import ConfirmationClient
 from .errors import NovaMartError
 from .probe import run_checkout_probe
-from .schemas import CheckoutRequest, QuoteRequest
+from .schemas import CHECKOUT_ID_PATTERN, CheckoutRequest, QuoteRequest, ReconciliationIn
 from .store import DemoStore
 
 SERVICE_NAME = "novamart-shopping-api"
@@ -39,9 +40,11 @@ def _log(level: int, event: str, **fields: Any) -> None:
     logger.log(level, json.dumps({"event": event, "service": SERVICE_NAME, **fields}, default=str))
 
 
-def build_service(data_dir: Path | str | None = None) -> CheckoutService:
+def build_service(data_dir: Path | str | None = None,
+                  confirmations: ConfirmationClient | None = None) -> CheckoutService:
     directory = Path(data_dir or os.environ.get("NOVAMART_DATA_DIR") or DEFAULT_DATA_DIR)
-    return CheckoutService(Catalog(), DemoStore(directory))
+    return CheckoutService(Catalog(), DemoStore(directory), confirmations=confirmations,
+                           log=lambda event, **fields: _log(logging.INFO, event, **fields))
 
 
 def product_to_dict(product: Product, available: int, data_dir: Path | None = None) -> dict[str, Any]:
@@ -66,9 +69,9 @@ def product_to_dict(product: Product, available: int, data_dir: Path | None = No
     }
 
 
-def create_app(data_dir: Path | str | None = None) -> FastAPI:
+def create_app(data_dir: Path | str | None = None, *, confirmations: ConfirmationClient | None = None) -> FastAPI:
     logging.basicConfig(level=os.environ.get("NOVAMART_LOG_LEVEL", "INFO"), format="%(message)s")
-    service = build_service(data_dir)
+    service = build_service(data_dir, confirmations)
 
     app = FastAPI(
         title="NovaMart Shopping API",
@@ -143,10 +146,11 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
         }
 
     @app.get("/api/health/checkout", tags=["health"])
-    def checkout_health() -> JSONResponse:
-        report = run_checkout_probe(service)
+    def checkout_health(request: Request) -> JSONResponse:
+        report = run_checkout_probe(service, request_id=request.state.request_id)
         if report["status"] != "healthy":
-            _log(logging.ERROR, "checkout_probe_failed", failed_checks=report["failed_checks"], report=report)
+            _log(logging.ERROR, "checkout_probe_failed", failed_checks=report["failed_checks"],
+                 request_id=request.state.request_id, report=report)
         return JSONResponse(status_code=200 if report["status"] == "healthy" else 503, content=report)
 
     # --------------------------------------------------------------- catalog
@@ -213,24 +217,49 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
         return result
 
     @app.post("/api/checkout", status_code=201, tags=["checkout"])
-    def checkout(body: CheckoutRequest, request: Request) -> dict[str, Any]:
+    def checkout(
+        body: CheckoutRequest,
+        request: Request,
+        idempotency_key: str | None = Header(default=None, pattern=CHECKOUT_ID_PATTERN),
+    ) -> JSONResponse:
+        # Clients send one checkout ID per checkout and reuse it on retries. Without one, the
+        # attempt is still tracked, but a retry cannot be recognised as the same checkout.
+        checkout_id = body.checkout_id or idempotency_key or f"chk_{uuid.uuid4().hex}"
         items = [CartItem(i.product_id, i.quantity) for i in body.items]
-        order = service.place_order(
+        result = service.checkout(
+            checkout_id,
             items,
             body.promo_code,
             body.shipping_method,
             customer=body.customer.model_dump(),
             shipping_address=body.shipping_address.model_dump(),
-        )
-        _log(
-            logging.INFO,
-            "order_created",
-            order_id=order["order_id"],
-            total_cents=order["total_cents"],
-            item_count=order["item_count"],
             request_id=request.state.request_id,
         )
-        return order
+        content = {**service.order_view(result.order), "replayed": result.replayed}
+        return JSONResponse(status_code=200 if result.replayed else 201, content=content)
+
+    # ------------------------------------------------- checkout attempts (recovery)
+    @app.get("/api/checkouts", tags=["recovery"])
+    def list_checkouts(
+        since: datetime | None = None,
+        until: datetime | None = None,
+        unfinished: bool = False,
+        limit: int = Query(default=100, ge=1, le=500),
+    ) -> dict[str, Any]:
+        attempts = service.store.list_checkouts(since=since, until=until, unfinished=unfinished, limit=limit)
+        return {"count": len(attempts), "checkouts": attempts}
+
+    @app.get("/api/checkouts/{checkout_id}", tags=["recovery"])
+    def get_checkout(checkout_id: str) -> dict[str, Any]:
+        return service.checkout_record(checkout_id)
+
+    @app.post("/api/checkouts/{checkout_id}/confirmation", tags=["recovery"])
+    def resend_confirmation(checkout_id: str, request: Request) -> dict[str, Any]:
+        return service.resend_confirmation(checkout_id, request.state.request_id)
+
+    @app.put("/api/checkouts/{checkout_id}/reconciliation", tags=["recovery"])
+    def record_reconciliation(checkout_id: str, body: ReconciliationIn) -> dict[str, Any]:
+        return service.record_reconciliation(checkout_id, body.outcome, body.incident_id, body.evidence)
 
     # ---------------------------------------------------------------- orders
     @app.get("/api/orders", tags=["orders"])
@@ -240,7 +269,7 @@ def create_app(data_dir: Path | str | None = None) -> FastAPI:
 
     @app.get("/api/orders/{order_id}", tags=["orders"])
     def get_order(order_id: str) -> dict[str, Any]:
-        return service.store.get_order(order_id)
+        return service.order_view(service.store.get_order(order_id))
 
     return app
 
