@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, assistant, bad_deploys, demo_outages, demo_traffic, walkthrough
+from . import __version__, accounts, assistant, repositories, bad_deploys, demo_outages, demo_traffic, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -226,6 +226,18 @@ class WorkspaceIn(BaseModel):
     name: str = Field(min_length=1, max_length=80)
 
 
+class GitHubConnectIn(BaseModel):
+    token: str = Field(min_length=20, max_length=255)
+
+
+class RepositoryIn(BaseModel):
+    repo: str = Field(pattern=r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", max_length=140)
+    service_name: str = Field(min_length=1, max_length=60)
+    base_branch: str = Field(min_length=1, max_length=255)
+    deployed_url: str = Field(pattern=r"^https?://[^\s]+$", max_length=500)
+    workflow: str | None = Field(default=None, pattern=r"^[A-Za-z0-9._-]+\.ya?ml$", max_length=200)
+
+
 class DemoOutageIn(BaseModel):
     scenario: Literal["payment", "images", "inventory", "send", "receive", "both", "confirmation_timeout"]
 
@@ -251,6 +263,7 @@ def create_app(
     clock=utcnow,
     monitor_kwargs: dict[str, Any] | None = None,
     assistant_transport: Any = None,
+    github_transport: Any = None,
     demo_controls: bool | None = None,
 ) -> FastAPI:
     settings = settings or load_settings()
@@ -499,6 +512,56 @@ def create_app(
     @app.get("/api/v1/auth/me", response_model=Envelope[dict[str, Any]])
     def me(request: Request, user: dict[str, Any] = Depends(signed_in)):
         return ok(account(user, request))
+
+    async def github_call(coro):
+        try:
+            return await coro
+        except repositories.RepoError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.get("/api/v1/github", response_model=Envelope[dict[str, Any]])
+    def github_status(ws: str = Depends(workspace)):
+        return ok(repositories.public_connection(repositories.connection(storage, ws)))
+
+    @app.put("/api/v1/github", response_model=Envelope[dict[str, Any]])
+    async def github_connect(body: GitHubConnectIn, ws: str = Depends(workspace)):
+        return ok(await github_call(repositories.connect(storage, ws, body.token, clock(), github_transport)))
+
+    @app.delete("/api/v1/github", response_model=Envelope[dict[str, Any]])
+    def github_disconnect(ws: str = Depends(workspace)):
+        storage.delete_doc("github", ws)
+        return ok({"connected": False})
+
+    @app.get("/api/v1/github/repos", response_model=Envelope[list[dict[str, Any]]])
+    async def github_repos(ws: str = Depends(workspace)):
+        async def run():
+            return await repositories.list_repos(repositories.client(storage, ws, github_transport))
+        return ok(await github_call(run()))
+
+    @app.get("/api/v1/github/repos/{owner}/{name}", response_model=Envelope[dict[str, Any]])
+    async def github_repo_options(owner: str, name: str, ws: str = Depends(workspace)):
+        async def run():
+            return await repositories.repo_options(repositories.client(storage, ws, github_transport), f"{owner}/{name}")
+        return ok(await github_call(run()))
+
+    @app.get("/api/v1/repositories", response_model=Envelope[list[dict[str, Any]]])
+    def list_repositories(ws: str = Depends(workspace)):
+        return ok(repositories.mappings(storage, ws))
+
+    @app.post("/api/v1/repositories", response_model=Envelope[dict[str, Any]])
+    async def add_repository(body: RepositoryIn, ws: str = Depends(workspace)):
+        async def run():
+            gh = repositories.client(storage, ws, github_transport)
+            return await repositories.add_mapping(storage, ws, gh, body.model_dump(), clock())
+        return ok(await github_call(run()))
+
+    @app.delete("/api/v1/repositories/{service_id}", response_model=Envelope[dict[str, Any]])
+    def remove_repository(service_id: str, ws: str = Depends(workspace)):
+        try:
+            repositories.remove_mapping(storage, ws, service_id)
+        except repositories.RepoError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return ok({"removed": service_id})
 
     @app.post("/api/v1/workspaces", response_model=Envelope[dict[str, Any]])
     def create_workspace(body: WorkspaceIn, user: dict[str, Any] = Depends(signed_in)):
