@@ -263,3 +263,18 @@ def test_github_adapter_failed_publish_raises(db):
     with pytest.raises(o.PublishFailed):
         adapter.open_draft_pr("r", "agent/fix-1-1", "a" * 40, "t", "b",
                               {"files": {"shopping/backend/app/pricing.py": "x"}})
+
+
+def test_reembed_moves_memories_to_the_current_model_from_their_stored_text(db, monkeypatch):
+    monkeypatch.delenv("VOYAGE_API_KEY", raising=False)
+    coll = m.memories(db)
+    coll.insert_many([
+        {"_id": "old", "failure_text": "checkout timed out", "embedding": [0.0], "embedding_model": "voyage-3.5"},
+        {"_id": "current", "failure_text": "x", "embedding": [9.0], "embedding_model": memory.embedding_model()},
+    ])
+    assert memory.reembed(coll, "failure_text") == 1
+    old = coll.find_one({"_id": "old"})
+    assert old["embedding_model"] == memory.embedding_model()
+    assert old["embedding"] == memory.embed("checkout timed out")
+    assert coll.find_one({"_id": "current"})["embedding"] == [9.0], "already on the current model: untouched"
+    assert memory.reembed(coll, "failure_text") == 0
