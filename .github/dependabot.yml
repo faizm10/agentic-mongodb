@@ -1,5 +1,6 @@
 # Weekly dependency updates. Minor and patch bumps are grouped into one PR per folder; majors come
-# one at a time.
+# one at a time. When an update breaks the NovaMart or NovaConnect CI, the OpsRelay agent tries a
+# verified fix and opens it as a PR into the Dependabot branch (agents/README.md, "App configuration").
 version: 2
 updates:
   - package-ecosystem: "pip"

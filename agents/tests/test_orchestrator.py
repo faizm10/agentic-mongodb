@@ -83,6 +83,25 @@ def test_happy_path(db):
     assert m.memories(db).count_documents({"source_incident_id": iid}) == 1
 
 
+def test_dependabot_failure_gets_a_fix_pr_on_its_branch_and_resolves_on_merge(db, monkeypatch):
+    monkeypatch.delenv("OPSRELAY_APPS_CONFIG")  # the real apps.toml has the frontend apps
+    class WebRepairer(FakeRepairer):
+        def repair(self, failed_run, similar):
+            return {**super().repair(failed_run, similar), "files": {"shopping/frontend/tsconfig.json": "{}\n"},
+                    "changed_files": ["shopping/frontend/tsconfig.json"]}
+
+    branch = "dependabot/npm_and_yarn/shopping/frontend/typescript-7.0.2"
+    gh = FakeGitHub()
+    iid, _ = o.ingest_failed_run({**SAMPLE_RUN, "app": "shopping-web", "head_branch": branch}, db=db)
+    orch = o.Orchestrator(gh, WebRepairer(), db=db, worker_id="w1", deployments=object())
+    inc = orch.run_incident(iid)
+    assert inc["status"] == m.STATUS_AWAITING_MERGE
+    assert gh.find_pr(SAMPLE_RUN["repo"], inc["pr_intent"]["branch"])["base"] == branch
+    # Merged into the Dependabot branch: nothing deploys on its own, so the incident is resolved.
+    gh.set_state(SAMPLE_RUN["repo"], inc["pr_intent"]["branch"], "merged", merge_sha="f" * 40)
+    assert orch.check_reviews() == [(iid, m.STATUS_RESOLVED)]
+
+
 def test_failed_verification_stops_before_pr(db):
     gh = FakeGitHub()
     iid, _ = o.ingest_failed_run(SAMPLE_RUN, db=db)
@@ -200,7 +219,7 @@ def test_monitor_adapter_maps_hamza_events(db):
         def forget(self, iid): self.forgotten.append(iid)
 
     client = NS(config=NS(owner="faizm10", repo="agentic-mongodb"),
-                get_failure_context=lambda run_id, attempt: NS(logs="FAILED test_x"))
+                get_failure_context=lambda run_id, attempt: NS(logs="FAILED test_x", failed_jobs=["backend tests"], failed_job="backend tests"))
     [run] = o.MonitorAdapter(client, Mon()).poll_failed_runs()
     assert run["app"] == "messaging" and run["repo"] == "faizm10/agentic-mongodb"
     assert run["failed_logs"] == "FAILED test_x" and run["run_id"] == 77

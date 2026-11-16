@@ -25,6 +25,8 @@ from typing import Any, Optional
 # Branches created by the agent always start with this prefix. The monitor ignores
 # anything on such a branch so the agent never reacts to its own pull requests.
 AGENT_BRANCH_PREFIX = "agent/"
+# Dependabot's update branches. A failure there gets a fix PR targeting that branch.
+DEPENDABOT_BRANCH_PREFIX = "dependabot/"
 
 # Workflow file name -> app key. The app keys match the keys in agents/apps.toml
 # ("shopping", "messaging"). Edit here if Developer 4 renames a workflow.
@@ -35,6 +37,8 @@ WORKFLOW_FILE_TO_APP: dict[str, str] = {
 
 # App key -> folder in the monorepo.
 APP_ROOTS: dict[str, str] = {
+    "shopping-web": "shopping/frontend",
+    "messaging-web": "message-platform/frontend",
     "shopping": "shopping",
     "messaging": "message-platform",
 }
@@ -233,6 +237,7 @@ class PublishRequest(_Serializable):
     context_notes: str = ""     # optional markdown appended to the PR body (e.g. similar past incidents)
     investigation: str = ""     # optional markdown: what the agent found and why (diagnosis, evidence)
     new_files: list[str] = field(default_factory=list)  # agent-added regression tests (see publisher)
+    base_branch: str = ""       # PR base; empty = the repository's base branch (a Dependabot branch otherwise)
 
     @classmethod
     def from_dict(
@@ -245,6 +250,7 @@ class PublishRequest(_Serializable):
         workflow_url: str = "",
         title: str = "",
         context_notes: str = "",
+        base_branch: str = "",
     ) -> "PublishRequest":
         """Accepts the ``Repairer.repair()`` dict (files as ``{path: content}``) or a
         list of ``{"path", "content"}`` items. ``tests_passed`` falls back to
@@ -278,6 +284,7 @@ class PublishRequest(_Serializable):
             context_notes=context_notes or d.get("context_notes", ""),
             investigation=d.get("investigation") or "",
             new_files=list(d.get("added_tests") or d.get("new_files") or []),
+            base_branch=base_branch,
         )
 
     @classmethod

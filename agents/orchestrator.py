@@ -76,7 +76,7 @@ PATCH_FIELDS = ("diff", "files", "changed_files", "summary", "root_cause", "adde
 class GitHub(Protocol):
     def find_pr(self, repo: str, branch: str) -> dict | None: ...
     def open_draft_pr(self, repo: str, branch: str, base_sha: str, title: str,
-                      body: str, patch: dict) -> dict: ...
+                      body: str, patch: dict, base_branch: str | None = None) -> dict: ...
 
 
 class Repairer(Protocol):
@@ -113,6 +113,12 @@ def branch_for(inc: dict) -> str:
         slug = re.sub(r"[^a-z0-9-]+", "-", inc["live"]["uptime_incident_id"].lower()).strip("-")
         return f"agent/fix-live-{slug}"[:90]
     return f"agent/fix-{inc['run_id']}-{inc['run_attempt']}"
+
+
+def target_branch(inc: dict) -> str | None:
+    """The Dependabot branch a fix PR should target, or None for the repository's base branch."""
+    head = inc.get("head_branch") or ""
+    return head if head.startswith("dependabot/") else None
 
 
 def crash_point(name: str) -> None:
@@ -431,7 +437,8 @@ class Orchestrator:
         m.log_step(inc["_id"], "pr_confirmed", "started", self.worker_id,
                    {"branch": intent["branch"]}, db=self.db)
         self.github.open_draft_pr(inc["repo"], intent["branch"], intent["base_sha"],
-                                  intent["title"], _pr_body(inc), inc.get("patch", {}))
+                                  intent["title"], _pr_body(inc), inc.get("patch", {}),
+                                  base_branch=target_branch(inc))
         crash_point("pr_created")
         # "Sent" isn't "done": confirm the PR actually exists before recording it.
         confirmed = self.github.find_pr(inc["repo"], intent["branch"])
@@ -446,7 +453,7 @@ class Orchestrator:
         the same patch on the new head and publish from there, or hand it to a human."""
         if self.reverify is None:
             return inc, intent
-        head = getattr(self.github, "base_head", lambda repo: None)(inc["repo"])
+        head = getattr(self.github, "base_head", lambda repo, branch=None: None)(inc["repo"], target_branch(inc))
         if not head or head == intent["base_sha"]:
             return inc, intent
         passed, detail, files = self.reverify(inc, head)
@@ -496,7 +503,9 @@ class Orchestrator:
             state = pr.get("state")
             if state not in ("merged", "closed"):
                 continue
-            merged_status = m.STATUS_AWAITING_DEPLOYMENT if self.deployments else m.STATUS_RESOLVED
+            # A fix merged into a Dependabot branch ships with that upgrade, not on its own.
+            merged_status = (m.STATUS_AWAITING_DEPLOYMENT if self.deployments and not target_branch(inc)
+                             else m.STATUS_RESOLVED)
             status = merged_status if state == "merged" else m.STATUS_REJECTED
             now = m.utcnow()
             res = m.incidents(self.db).update_one(
@@ -636,7 +645,9 @@ def _pr_body(inc: dict) -> str:
     similar = inc.get("similar", [])
     trigger = (f"live incident `{inc['live']['uptime_incident_id']}` ({inc['live'].get('title') or ''})"
                if inc.get("source") == m.SOURCE_LIVE
-               else f"failed CI run {inc.get('html_url') or inc['run_id']}")
+               else f"failed CI run {inc.get('html_url') or inc['run_id']}"
+               + (f" on Dependabot's `{target_branch(inc)}`; merge this into that branch, then merge"
+                  " the Dependabot PR" if target_branch(inc) else ""))
     lines = [
         f"Automated repair for {trigger} on `{inc['commit_sha'][:7]}`.",
         "", f"**Root cause:** {patch.get('root_cause') or 'n/a'}",
@@ -673,9 +684,16 @@ class MonitorAdapter:
             except Exception:
                 self.monitor.forget(ev.incident_id)  # re-report on the next poll
                 raise
+            from agents.github_types import APP_ROOTS
+
+            app = APP_KEYS.get(ev.application, ev.application)
+            # Only the frontend job failed (a typecheck or build): repair the app's frontend.
+            jobs = ctx.failed_jobs or [ctx.failed_job]
+            if f"{app}-web" in APP_ROOTS and jobs and all("frontend" in j.lower() for j in jobs):
+                app = f"{app}-web"
             runs.append({
                 "repo": f"{self.client.config.owner}/{self.client.config.repo}",
-                "app": APP_KEYS.get(ev.application, ev.application),
+                "app": app,
                 "run_id": ev.workflow_run_id,
                 "run_attempt": ev.run_attempt,
                 "commit_sha": ev.commit_sha,
@@ -707,12 +725,12 @@ class GitHubAdapter:
             return None
         return {"number": pr.number, "url": pr.url, "state": pr.state, "merge_sha": pr.merge_sha}
 
-    def base_head(self, repo: str) -> str | None:
-        branch = self.client.get_branch(self.client.config.base_branch)
-        return branch.sha if branch else None
+    def base_head(self, repo: str, branch: str | None = None) -> str | None:
+        head = self.client.get_branch(branch or self.client.config.base_branch)
+        return head.sha if head else None
 
     def open_draft_pr(self, repo: str, branch: str, base_sha: str, title: str,
-                      body: str, patch: dict) -> dict:
+                      body: str, patch: dict, base_branch: str | None = None) -> dict:
         from agents.github_types import (APP_ROOTS, STATUS_FAILED, STATUS_VERIFIED,
                                          PublishRequest, fix_branch_name)
 
@@ -727,7 +745,7 @@ class GitHubAdapter:
         req = PublishRequest.from_dict({**patch, "tests_passed": True},
                                        incident_id=incident_id, base_sha=base_sha,
                                        application=app, title=title,
-                                       context_notes=_similar_section(body))
+                                       context_notes=_similar_section(body), base_branch=base_branch or "")
         res = self.publisher.create_or_find_pr(req)
         if res.status == STATUS_FAILED:
             raise PublishFailed(res.detail)

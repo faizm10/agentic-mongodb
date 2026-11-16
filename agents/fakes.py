@@ -30,7 +30,7 @@ class FakeGitHub:
     def find_pr(self, repo: str, branch: str) -> dict | None:
         return self._load().get(f"{repo}:{branch}")
 
-    def open_draft_pr(self, repo, branch, base_sha, title, body, patch) -> dict:
+    def open_draft_pr(self, repo, branch, base_sha, title, body, patch, base_branch=None) -> dict:
         prs = self._load()
         key = f"{repo}:{branch}"
         if key in prs:  # real client must be idempotent on branch too
@@ -38,7 +38,7 @@ class FakeGitHub:
         self.create_calls += 1
         number = 100 + len(prs) + 1
         prs[key] = {"number": number, "url": f"https://github.com/{repo}/pull/{number}",
-                    "branch": branch, "title": title, "draft": True, "state": "open",
+                    "branch": branch, "base": base_branch, "title": title, "draft": True, "state": "open",
                     "body": body, "files": sorted((patch.get("files") or {}))}
         self._save(prs)
         return prs[key]
