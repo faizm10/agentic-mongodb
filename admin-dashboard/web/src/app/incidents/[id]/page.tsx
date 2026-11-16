@@ -27,6 +27,8 @@ const AGENT_STATUS: Record<string, string> = {
   awaiting_merge: "Fix ready for review",
   needs_review: "AI agent needs a person to help",
   failed: "AI agent couldn't finish",
+  reported: "Verified fix reported (no PR in report-only mode)",
+  awaiting_deployment: "Fix merged, waiting for the deploy and a fresh check",
   resolved: "Fix merged",
   rejected: "Fix was turned down",
 };
