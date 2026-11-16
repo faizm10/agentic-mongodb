@@ -10,11 +10,18 @@ from before a connector was saved are skipped, so connecting doesn't replay old 
 
 from __future__ import annotations
 
+import hashlib
+import hmac
+import json
+import re
+import secrets
 from datetime import datetime
 from typing import Callable
+from urllib.parse import urlsplit
 
 import httpx
 
+from . import netguard
 from .models import Incident
 from .storage.base import Storage, iso
 
@@ -44,6 +51,47 @@ def _discord(conf: dict, event: str, ev: dict) -> dict:
     return {"url": conf["url"], "json": {"content": _text(event, ev)[:2000]}}
 
 
+def _webhook(conf: dict, event: str, ev: dict) -> dict:
+    """JSON event signed like GitHub's webhooks: X-OpsRelay-Signature: sha256=HMAC(secret, body)."""
+    body = json.dumps({"event": event, **{k: ev.get(k) for k in ("incident_id", "service", "title", "severity", "state",
+                                                                    "url", "pr_url", "reason")}}).encode()
+    signature = hmac.new(conf["secret"].encode(), body, hashlib.sha256).hexdigest()
+    return {"url": conf["url"], "content": body,
+            "headers": {"Content-Type": "application/json", "X-OpsRelay-Event": event, "X-OpsRelay-Signature": f"sha256={signature}"}}
+
+
+def _pagerduty(conf: dict, event: str, ev: dict) -> dict | None:
+    """Events API v2: trigger on open, resolve on close, keyed by incident. The test resolves an unused
+    key, which checks the routing key without paging anyone."""
+    if event not in ("opened", "resolved", "test"):
+        return None
+    dedup = f"opsrelay-{ev.get('incident_id') or 'connection-test'}"
+    body: dict = {"routing_key": conf["routing_key"], "dedup_key": dedup,
+                  "event_action": "trigger" if event == "opened" else "resolve"}
+    if event == "opened":
+        body["payload"] = {"summary": f"{ev['service']}: {ev['title']}"[:1024], "source": "OpsRelay",
+                           "severity": "critical" if ev["severity"] == "down" else "warning"}
+        body["links"] = [{"href": ev["url"], "text": "OpsRelay incident"}]
+    return {"url": "https://events.pagerduty.com/v2/enqueue", "json": body}
+
+
+def _webhook_config(body: dict) -> dict:
+    url = str(body.get("url") or "").strip()
+    parts = urlsplit(url)
+    if parts.scheme not in ("http", "https") or not parts.hostname:
+        raise NotifyError(422, "Enter the http(s) URL that should receive the events.")
+    if reason := netguard.check_url(url):
+        raise NotifyError(422, f"That URL isn't allowed: {reason}")
+    return {"url": url, "secret": secrets.token_urlsafe(32)}
+
+
+def _pagerduty_config(body: dict) -> dict:
+    key = str(body.get("routing_key") or "").strip()
+    if not re.fullmatch(r"[A-Za-z0-9]{32}", key):
+        raise NotifyError(422, "Paste the 32-character integration (routing) key of a PagerDuty Events API v2 integration.")
+    return {"routing_key": key}
+
+
 def _url_on(prefixes: tuple[str, ...], label: str) -> Callable[[dict], dict]:
     def check(body: dict) -> dict:
         url = str(body.get("url") or "").strip()
@@ -58,6 +106,8 @@ KINDS: dict[str, tuple[str, Callable[[dict], dict], Callable[[dict, str, dict], 
     "slack": ("Slack", _url_on(("https://hooks.slack.com/services/",), "Slack incoming"), _slack),
     "discord": ("Discord", _url_on(("https://discord.com/api/webhooks/", "https://discordapp.com/api/webhooks/"),
                                    "Discord"), _discord),
+    "webhook": ("Webhook", _webhook_config, _webhook),
+    "pagerduty": ("PagerDuty", _pagerduty_config, _pagerduty),
 }
 
 
@@ -84,7 +134,8 @@ def save(storage: Storage, ws: str, kind: str, body: dict, now: datetime) -> dic
     _, validate, _ = _kind(kind)
     conf = {"workspace_id": ws, "kind": kind, **validate(body), "created_at": iso(now)}
     storage.put_doc("notify", f"{ws}:{kind}", conf)
-    return _public(conf)
+    # The signing secret is shown once, here; the server keeps it to sign each delivery.
+    return {**_public(conf), **({"secret": conf["secret"]} if "secret" in conf else {})}
 
 
 def remove(storage: Storage, ws: str, kind: str) -> None:
@@ -98,8 +149,9 @@ async def _send(conf: dict, event: str, ev: dict, transport=None) -> str | None:
     if request is None:
         return None
     try:
-        async with httpx.AsyncClient(timeout=10, transport=transport) as client:
-            res = await client.post(request["url"], json=request["json"], headers=request.get("headers"))
+        async with httpx.AsyncClient(timeout=10, transport=transport, event_hooks={"request": [netguard.guard_request]}) as client:
+            res = await client.post(request["url"], json=request.get("json"), content=request.get("content"),
+                                    headers=request.get("headers"))
     except httpx.RequestError as exc:
         return f"Couldn't reach {KINDS[conf['kind']][0]}: {exc.__class__.__name__}"
     return None if res.status_code < 300 else f"{KINDS[conf['kind']][0]} answered HTTP {res.status_code}"

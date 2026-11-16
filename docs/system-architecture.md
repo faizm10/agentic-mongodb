@@ -179,8 +179,10 @@ the `X-OpsRelay-Secret` header (Better Stack doesn't sign webhooks). The payload
 mapped service. One Better Stack incident is one OpsRelay incident: an exact redelivery is ignored, and
 acknowledged, resolved and reopened events update that same incident.
 
-**Notifications.** Under **Connectors**, a workspace can add outgoing connectors (Slack and Discord
-incoming webhooks). The scheduled check derives events from stored state: an incident opened or
+**Notifications.** Under **Connectors**, a workspace can add outgoing connectors: Slack and Discord
+incoming webhooks, a generic webhook (JSON signed with `X-OpsRelay-Signature: sha256=<HMAC of the body>`,
+its secret shown once, every request through the private-URL guard) and PagerDuty (Events API v2:
+trigger on open, resolve on close, deduplicated by incident). The scheduled check derives events from stored state: an incident opened or
 resolved, the repair agent opening a draft PR, or handing an incident to a human. Each
 (connector, incident, event) is claimed once in storage before it is sent, and a failed send releases
 the claim, so a repeated run never double-posts and a failure is retried. Events from before a connector
