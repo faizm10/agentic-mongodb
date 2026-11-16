@@ -560,6 +560,11 @@ class GitHubClient:
                 paths.append(f["previous_filename"])
         return paths
 
+    def contains(self, ancestor: str, head: str) -> bool:
+        """True if ``head`` includes ``ancestor`` (compare status "ahead" or "identical")."""
+        data = self._get_json(f"{self._repo}/compare/{ancestor}...{head}")
+        return data.get("status") in ("ahead", "identical")
+
     @staticmethod
     def _pr_from(d: dict[str, Any]) -> PullRequestInfo:
         state = "merged" if d.get("merged_at") or d.get("merged") else d.get("state", "open")
@@ -571,6 +576,7 @@ class GitHubClient:
             head_sha=d["head"]["sha"],
             base_ref=d["base"]["ref"],
             title=d.get("title", ""),
+            merge_sha=d.get("merge_commit_sha") if state == "merged" else None,
         )
 
     def find_pr(self, branch: str, state: str = "all") -> Optional[PullRequestInfo]:
