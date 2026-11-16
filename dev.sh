@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Start the three demo platforms (six servers) and the AI agent worker from one terminal.
+# Start the three demo platforms (six servers), the AI agent worker and the recovery worker from one terminal.
 set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -15,15 +15,16 @@ fi
 
 usage() {
   cat <<'EOF'
-Usage: ./dev.sh [up|setup|logs|help]
+Usage: ./dev.sh [up|setup|logs|reset|help]
 
   setup  Install the Python and Node dependencies for all three platforms and the agent.
   up     Start all six servers and the AI agent worker (default). Press Ctrl+C to stop them all.
   logs   Follow the server and agent logs in .dev/logs/.
+  reset  Clear incidents in Atlas, local demo records and old agent/* branches (asks first).
 
 Set PYTHON=python3.12 to choose a Python interpreter during setup.
 Set DEV_PORT_OFFSET=100 to shift every port when the defaults are occupied.
-Set DEV_AGENT=0 to start the servers without the AI agent worker.
+Set DEV_AGENT=0 to start the servers without the AI agent and recovery workers.
 EOF
 }
 
@@ -198,7 +199,7 @@ up() {
 
   # Let both applications become ready before starting the uptime worker. This
   # avoids recording a false outage while Next.js is still compiling.
-  start novamart-api "$ROOT/shopping/backend" "$ROOT/shopping/backend/.venv/bin/uvicorn" app.main:app --reload --port "$mart_api"
+  start novamart-api "$ROOT/shopping/backend" env NOVACONNECT_URL="http://127.0.0.1:$connect_api" "$ROOT/shopping/backend/.venv/bin/uvicorn" app.main:app --reload --port "$mart_api"
   start novamart-web "$ROOT/shopping/frontend" env BACKEND_URL="http://127.0.0.1:$mart_api" "$ROOT/shopping/frontend/node_modules/.bin/next" dev -p "$mart_web"
   start novaconnect-api "$ROOT/message-platform/backend" "$ROOT/message-platform/backend/.venv/bin/uvicorn" app.main:app --reload --port "$connect_api"
   start novaconnect-web "$ROOT/message-platform/frontend" env BACKEND_URL="http://127.0.0.1:$connect_api" NEXT_PUBLIC_WS_URL="ws://127.0.0.1:$connect_api" "$ROOT/message-platform/frontend/node_modules/.bin/next" dev -p "$connect_web"
@@ -224,6 +225,10 @@ up() {
     start agent-worker "$ROOT" env PYTHONUNBUFFERED=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" "$ROOT/agents/.venv/bin/python" -m agents.orchestrator worker
     agent=$((${#PIDS[@]} - 1))
     echo "AI agent worker started. Log: $LOG_DIR/agent-worker.log"
+    # Reconciles checkouts interrupted by an incident. It runs separately from the agent and is
+    # restarted when it exits, so a crash mid-recovery resumes the same incident under a new worker ID.
+    start recovery-worker "$ROOT" env PYTHONUNBUFFERED=1 ${ca_file:+SSL_CERT_FILE="$ca_file"} OPSRELAY_SHOPPING_URL="http://127.0.0.1:$mart_api" OPSRELAY_MESSAGING_URL="http://127.0.0.1:$connect_api" bash -c 'while true; do "$0" -m agents.recovery worker || echo "recovery worker exited (status $?); restarting"; sleep 1; done' "$ROOT/agents/.venv/bin/python"
+    echo "Recovery worker started. Log: $LOG_DIR/recovery-worker.log"
   else
     echo "AI agent worker not started ($skip)."
   fi
@@ -263,6 +268,7 @@ case "${1:-up}" in
     fi
     tail -n 20 -f "$LOG_DIR"/*.log
     ;;
+  reset) cd "$ROOT" && exec "$ROOT/agents/.venv/bin/python" -m agents.reset "${@:2}" ;;
   help|-h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac
