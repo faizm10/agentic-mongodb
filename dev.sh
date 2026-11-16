@@ -209,7 +209,7 @@ up() {
   wait_ready novaconnect-api "http://127.0.0.1:$connect_api/health" "${PIDS[2]}"
   wait_ready novaconnect-web "http://127.0.0.1:$connect_web" "${PIDS[3]}"
 
-  start opsrelay-api "$ROOT/admin-dashboard/backend" env OPSRELAY_NOVAMART_FRONTEND_URL="http://127.0.0.1:$mart_web" OPSRELAY_NOVAMART_BACKEND_URL="http://127.0.0.1:$mart_api" OPSRELAY_NOVACONNECT_FRONTEND_URL="http://127.0.0.1:$connect_web" OPSRELAY_NOVACONNECT_BACKEND_URL="http://127.0.0.1:$connect_api" "$ROOT/admin-dashboard/backend/.venv/bin/python" -m uptime serve --reload --port "$relay_api"
+  start opsrelay-api "$ROOT/admin-dashboard/backend" env OPSRELAY_ENV=development OPSRELAY_NOVAMART_FRONTEND_URL="http://127.0.0.1:$mart_web" OPSRELAY_NOVAMART_BACKEND_URL="http://127.0.0.1:$mart_api" OPSRELAY_NOVACONNECT_FRONTEND_URL="http://127.0.0.1:$connect_web" OPSRELAY_NOVACONNECT_BACKEND_URL="http://127.0.0.1:$connect_api" "$ROOT/admin-dashboard/backend/.venv/bin/python" -m uptime serve --reload --port "$relay_api"
   start opsrelay-web "$ROOT/admin-dashboard/web" env OPSRELAY_UPTIME_API_URL="http://127.0.0.1:$relay_api" "$ROOT/admin-dashboard/web/node_modules/.bin/next" dev -p "$relay_web"
   wait_ready opsrelay-api "http://127.0.0.1:$relay_api/api/v1/health" "${PIDS[4]}"
   wait_ready opsrelay-web "http://127.0.0.1:$relay_web" "${PIDS[5]}"
