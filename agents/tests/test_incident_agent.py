@@ -192,7 +192,7 @@ def test_live_bug_missed_by_tests_gets_regression_test_fix_and_draft_pr(db, agen
 
     pr = github.find_pr(REPO, inc["pr_intent"]["branch"])
     assert pr["draft"] and pr["state"] == "open" and pr["files"] == sorted([PRICING, added])
-    assert inc["pr_intent"]["title"].startswith("[OpsRelay] Fix shopping live incident")
+    assert inc["pr_intent"]["title"] == f"[OpsRelay] shopping: {inc['patch']['summary'].splitlines()[0]}"  # names the fix
     # The regression test was written once, before any fix, and the model saw the probe failure.
     names = [name for name, _, _ in llm.calls]
     assert names.index("_RegressionTestDraft") < names.index("_PatchDraft")
