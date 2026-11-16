@@ -126,6 +126,10 @@ const NOTIFIER_FORM: Record<string, { field: string; placeholder: string; help: 
     href: "https://api.slack.com/messaging/webhooks" },
   discord: { field: "url", placeholder: "https://discord.com/api/webhooks/…", help: "Channel settings → Integrations → Webhooks",
     href: "https://support.discord.com/hc/en-us/articles/228383668" },
+  webhook: { field: "url", placeholder: "https://your-service.example/opsrelay", help: "Any endpoint (Zapier, n8n, your API) that verifies X-OpsRelay-Signature",
+    href: "https://docs.github.com/en/webhooks/using-webhooks/validating-webhook-deliveries" },
+  pagerduty: { field: "routing_key", placeholder: "32-character integration key", help: "Add an Events API v2 integration to a PagerDuty service",
+    href: "https://support.pagerduty.com/main/docs/services-and-integrations" },
 };
 
 function NotificationsPanel() {
@@ -136,7 +140,7 @@ function NotificationsPanel() {
       <div className="border-b border-line px-5 py-3">
         <h2 className="text-sm font-semibold">Notifications</h2>
         <p className="mt-0.5 text-sm text-muted">
-          Posts when an incident opens or resolves, when the repair agent opens a draft PR, and when it needs a human. Sent with the 5-minute check.
+          Posts when an incident opens or resolves, when the repair agent opens a draft PR, and when it needs a human. Sent with the 5-minute check. PagerDuty only gets opens and resolves.
         </p>
       </div>
       <ul className="divide-y divide-line">
@@ -151,6 +155,7 @@ function NotifierRow({ notifier: n, onChange }: { notifier: Notifier; onChange: 
   const [value, setValue] = useState("");
   const [pending, setPending] = useState(false);
   const [note, setNote] = useState("");
+  const [secret, setSecret] = useState("");
   const [error, setError] = useState("");
   const run = async (action: () => Promise<unknown>, done = "") => {
     setPending(true);
@@ -180,7 +185,7 @@ function NotifierRow({ notifier: n, onChange }: { notifier: Notifier; onChange: 
             <button type="button" className="btn" disabled={pending} onClick={() => run(() => send("DELETE", `/api/v1/notifications/${n.kind}`))}>Remove</button>
           </>
         ) : form && (
-          <form className="flex min-w-0 flex-1 flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); run(() => send("PUT", `/api/v1/notifications/${n.kind}`, { [form.field]: value })); }}>
+          <form className="flex min-w-0 flex-1 flex-wrap gap-2" onSubmit={(e) => { e.preventDefault(); run(async () => setSecret((await send<{ secret?: string }>("PUT", `/api/v1/notifications/${n.kind}`, { [form.field]: value })).secret ?? "")); }}>
             <label className="min-w-0 flex-1">
               <span className="sr-only">{n.label} {form.field}</span>
               <input className="input font-mono" type="password" autoComplete="off" placeholder={form.placeholder} value={value} onChange={(e) => setValue(e.target.value)} required />
@@ -193,6 +198,12 @@ function NotifierRow({ notifier: n, onChange }: { notifier: Notifier; onChange: 
       {n.configured && (
         <p className={`text-xs ${last?.error ? "text-crit" : "text-faint"}`}>
           {last ? `Last delivery ${new Date(last.at).toLocaleString()} · ${last.event}${last.error ? ` · ${last.error}` : " · delivered"}` : "Nothing sent yet."}
+        </p>
+      )}
+      {secret && (
+        <p className="break-all text-xs text-warn">
+          Signing secret (copy it now, it isn&apos;t shown again): <span className="font-mono">{secret}</span>. Each request carries
+          <code> X-OpsRelay-Signature: sha256=</code>HMAC-SHA256 of the raw body with this secret.
         </p>
       )}
       {note && <p className="text-xs text-ok" role="status">{note}</p>}

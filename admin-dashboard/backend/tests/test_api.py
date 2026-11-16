@@ -497,3 +497,23 @@ def test_notifications_post_each_event_once_and_retry_failed_sends(tmp_path, set
     assert scheduled() == {"sent": failed["failed"], "failed": 0}
     assert scheduled() == {"sent": 0, "failed": 0}  # already delivered
     assert "Incident opened" in posted[-1] and "http://testserver/incidents/" in posted[-1]
+
+
+def test_webhook_connector_signs_the_exact_body_with_a_secret_shown_once(tmp_path, settings, clock):
+    import hashlib
+    import hmac
+
+    received = []
+    app = create_app(make_sqlite(tmp_path), settings, clock=clock,
+                     notify_transport=httpx.MockTransport(lambda r: received.append(r) or httpx.Response(204)))
+    owner = signed_in(app)
+    saved = owner.put("/api/v1/notifications/webhook", json={"url": "https://hooks.example.com/opsrelay"}).json()["data"]
+    assert "secret" not in str(owner.get("/api/v1/notifications").json())
+    owner.post("/api/v1/notifications/webhook/test").raise_for_status()
+
+    [request] = received
+    body = request.read()
+    expected = hmac.new(saved["secret"].encode(), body, hashlib.sha256).hexdigest()
+    assert request.headers["x-opsrelay-signature"] == f"sha256={expected}"
+    assert request.headers["x-opsrelay-event"] == "test"
+    assert owner.put("/api/v1/notifications/pagerduty", json={"routing_key": "short"}).status_code == 422
