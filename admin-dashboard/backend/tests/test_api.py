@@ -353,3 +353,29 @@ def test_betterstack_alerts_route_to_their_workspace_and_replays_update_one_inci
     assert alert(path=hook["webhook_path"], secret=other_hook["secret"]).status_code == 401
     assert other.get(f"/api/v1/incidents/{incident_id}").status_code == 404
     assert other.put("/api/v1/repositories/shop/betterstack", json={"monitor_id": "42"}).status_code == 404
+
+
+def test_repo_agent_is_off_by_default_and_only_enables_for_the_workers_repo(tmp_path, settings, clock, monkeypatch):
+    monkeypatch.setenv("GITHUB_OWNER", "octo")
+    monkeypatch.setenv("GITHUB_REPO", "shop")
+    storage = make_sqlite(tmp_path)
+    owner = signed_in(create_app(storage, settings, clock=clock))
+    for sid, repo in (("shop", "octo/shop"), ("chat", "octo/chat")):
+        storage.insert_doc("repos", f"demo:{sid}", {"id": f"demo:{sid}", "workspace_id": "demo", "service_id": sid, "service_name": sid,
+                                                    "repo": repo, "base_branch": "main", "deployed_url": "https://x.example",
+                                                    "workflow": None, "created_at": "2026-03-02T12:00:00Z"})
+    repos = {r["service_id"]: r for r in owner.get("/api/v1/summary").json()["data"]["repositories"]}
+    assert repos["shop"]["agent"] == {"enabled": False, "mode": "report_only", "app": None}
+    assert repos["shop"]["health"] == "unknown", "no Better Stack monitor mapped yet"
+
+    on = {"enabled": True, "mode": "report_only", "app": "shopping"}
+    assert owner.put("/api/v1/repositories/chat/agent", json=on).status_code == 409, "the shared worker only serves octo/shop"
+    assert owner.put("/api/v1/repositories/shop/agent", json={**on, "app": "nope"}).status_code == 422
+    assert owner.put("/api/v1/repositories/shop/agent", json=on).json()["data"]["agent"] == on
+    assert owner.put("/api/v1/repositories/chat/agent", json={"enabled": False}).status_code == 200, "switching off always works"
+    assert {r["service_id"]: r["agent"]["enabled"] for r in owner.get("/api/v1/summary").json()["data"]["repositories"]} == \
+        {"shop": True, "chat": False}
+
+    other = signed_in(create_app(storage, settings, clock=clock), "other@example.com")
+    other.post("/api/v1/workspaces", json={"name": "Other"})
+    assert other.put("/api/v1/repositories/shop/agent", json={"enabled": False}).status_code == 404

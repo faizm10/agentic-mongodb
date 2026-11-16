@@ -7,8 +7,11 @@ never returned by the API.
 
 from __future__ import annotations
 
+import os
 import re
+import tomllib
 from datetime import datetime
+from pathlib import Path
 from typing import Any
 from urllib.parse import quote
 
@@ -17,6 +20,7 @@ import httpx
 from .storage.base import Storage, iso
 
 GITHUB_API = "https://api.github.com"
+AGENT_APPS = Path(__file__).resolve().parents[3] / "agents" / "apps.toml"
 
 
 class RepoError(Exception):
@@ -111,7 +115,33 @@ async def add_mapping(storage: Storage, ws: str, gh: GitHub, body: dict, now: da
 
 def public_mapping(m: dict) -> dict:
     return {**{k: m[k] for k in ("service_id", "service_name", "repo", "base_branch", "deployed_url", "workflow", "created_at")},
-            "betterstack_monitor_id": m.get("betterstack_monitor_id")}
+            "betterstack_monitor_id": m.get("betterstack_monitor_id"),
+            "agent": m.get("agent") or {"enabled": False, "mode": "report_only", "app": None}}
+
+
+def agent_config() -> dict:
+    """What the shared Python worker can investigate: its repository and the code areas in agents/apps.toml."""
+    owner, name = os.environ.get("GITHUB_OWNER", ""), os.environ.get("GITHUB_REPO", "agentic-mongodb")
+    apps = sorted(tomllib.loads(AGENT_APPS.read_text()).get("apps", {})) if AGENT_APPS.exists() else []
+    return {"worker_repo": f"{owner}/{name}" if owner else None, "apps": apps}
+
+
+def set_agent(storage: Storage, ws: str, service_id: str, settings: dict) -> dict:
+    mapping = storage.get_doc("repos", f"{ws}:{service_id}")
+    if mapping is None:
+        raise RepoError(404, f"Unknown service '{service_id}'.")
+    if settings["enabled"]:
+        conf = agent_config()
+        if conf["worker_repo"] is None:
+            raise RepoError(409, "Set GITHUB_OWNER and GITHUB_REPO so the shared worker knows its repository.")
+        if mapping["repo"].lower() != conf["worker_repo"].lower():
+            raise RepoError(409, f"The shared worker investigates {conf['worker_repo']} only; "
+                                 f"{mapping['repo']} needs its own worker and repair config.")
+        if settings["app"] not in conf["apps"]:
+            raise RepoError(422, f"Choose which code area the agent repairs: {', '.join(conf['apps'])}.")
+    agent = {"enabled": settings["enabled"], "mode": settings["mode"], "app": settings["app"]}
+    storage.put_doc("repos", mapping["id"], {**mapping, "agent": agent})
+    return {"service_id": service_id, "agent": agent}
 
 
 def mappings(storage: Storage, ws: str) -> list[dict]:

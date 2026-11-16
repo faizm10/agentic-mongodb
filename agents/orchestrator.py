@@ -392,11 +392,13 @@ class Orchestrator:
                               "summary": patch.get("summary")})
 
     def _save_pr_intent(self, inc: dict) -> dict:
-        if self.publish_repos is not None and inc["repo"] not in self.publish_repos:
+        repo_report_only = (inc.get("live") or {}).get("report_only")  # set per repo on the dashboard
+        if repo_report_only or (self.publish_repos is not None and inc["repo"] not in self.publish_repos):
             m.log_step(inc["_id"], "report", "completed", self.worker_id,
                        {"recommendation": (inc.get("recommendation") or {}).get("kind")}, db=self.db)
             return self._finish(inc, m.STATUS_REPORTED,
-                                f"report-only: draft PRs are not enabled for {inc['repo']}")
+                                "report-only: this repository's agent is set to report on the dashboard" if repo_report_only
+                                else f"report-only: draft PRs are not enabled for {inc['repo']}")
         intent = {
             "branch": branch_for(inc),
             "base_sha": inc["commit_sha"],

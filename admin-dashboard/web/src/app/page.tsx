@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { useState } from "react";
 import { StatusLegend, UptimeBars } from "@/components/charts";
+import { STATES } from "@/components/agent-activity";
 import { IncidentList } from "@/components/incidents";
 import { ErrorPanel, Shell, Skeleton, StatusText, WindowTabs } from "@/components/ui";
-import { type Check, STATUS_POLL_MS, type ServiceOverview, type Summary, type Window, usePoll } from "@/lib/api";
+import { type AgentActivity, type Check, type RepoOverview, STATUS_POLL_MS, type ServiceOverview, type Summary, type Window, usePoll } from "@/lib/api";
 import { ago, clock, ms, pct, useNow } from "@/lib/format";
 import { checkFacts } from "@/lib/phase";
 
@@ -120,6 +121,8 @@ export default function Overview() {
             </div>
           </section>
 
+          {data.repositories.length > 0 && <Repositories repos={data.repositories} activity={data.agent_activity} />}
+
           <IncidentList title="Active incidents" incidents={data.active_incidents} empty="No active incidents." />
 
           <div className="grid items-start gap-8 lg:grid-cols-[1fr_320px]">
@@ -129,5 +132,39 @@ export default function Overview() {
         </div>
       )}
     </Shell>
+  );
+}
+
+/** Mapped repositories: health from Better Stack, and the repair agent's switch and current work. */
+function Repositories({ repos, activity }: { repos: RepoOverview[]; activity: AgentActivity[] }) {
+  return (
+    <section aria-labelledby="repos-title">
+      <div className="mb-2 flex items-center justify-between gap-3">
+        <h2 id="repos-title" className="text-sm font-semibold">Repositories</h2>
+        <Link href="/repositories" className="text-xs text-accent hover:underline">Manage</Link>
+      </div>
+      <ul className="panel divide-y divide-line">
+        {repos.map((r) => {
+          const run = activity.find((a) => a.incident_id === r.open_incident_id);
+          return (
+            <li key={r.service_id} className="flex flex-wrap items-center gap-x-6 gap-y-1 px-5 py-3 text-sm">
+              <span className="min-w-40">
+                <span className="block font-medium">{r.service_name}</span>
+                <span className="font-mono text-xs text-faint">{r.repo}</span>
+              </span>
+              <StatusText status={r.health} label={r.health === "unknown" ? "No monitor mapped" : undefined} />
+              <span className="text-xs text-muted">
+                Agent: {r.agent.enabled ? (r.agent.mode === "draft_pr" ? "on, opens draft PRs" : "on, report only") : "off"}
+              </span>
+              {r.open_incident_id && (
+                <Link href={`/incidents/${encodeURIComponent(r.open_incident_id)}`} className="ml-auto text-xs text-accent hover:underline">
+                  Open incident{run ? ` · ${STATES[run.state].label}` : ""}
+                </Link>
+              )}
+            </li>
+          );
+        })}
+      </ul>
+    </section>
   );
 }

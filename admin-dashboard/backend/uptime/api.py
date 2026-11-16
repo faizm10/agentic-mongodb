@@ -123,7 +123,7 @@ class AgentAction(BaseModel):
 class AgentActivity(BaseModel):
     incident_id: str
     service_name: str
-    state: Literal["unavailable", "waiting", "working", "awaiting_review", "needs_attention", "finished"]
+    state: Literal["unavailable", "waiting", "working", "awaiting_review", "reported", "needs_attention", "finished"]
     stage: str | None = None
     started_at: datetime | None = None
     updated_at: datetime | None = None
@@ -199,6 +199,13 @@ class Summary(BaseModel):
     recent_incidents: list[IncidentOut]
     monitoring: MonitoringHealth
     agent_activity: list[AgentActivity]
+    repositories: list[dict[str, Any]] = []
+
+
+class AgentSettingsIn(BaseModel):
+    enabled: bool
+    mode: Literal["report_only", "draft_pr"] = "report_only"
+    app: str | None = Field(default=None, max_length=40)
 
 
 class AckIn(BaseModel):
@@ -411,8 +418,22 @@ def create_app(
         state = storage.get_state(incident.service_id)
         return IncidentOut(**incident.model_dump(), duration_seconds=incident.elapsed_seconds(now),
                            service_name=service_name(incident.service_id), related_ci=related_ci,
-                           service_health=state.status if state else "unknown",
+                           service_health=alert_health(incident) or (state.status if state else "unknown"),
                            recovery_status=recovery_status(incident, recovery), recovery=recovery)
+
+    def alert_health(incident: Incident) -> str | None:
+        """Better Stack is the health signal for alert-only services: down while its incident is open."""
+        if incident.evidence.get("source") != "betterstack":
+            return None
+        return "down" if storage.get_open_incident(incident.service_id) else "operational"
+
+    def repository_overview(ws: str) -> list[dict[str, Any]]:
+        out = []
+        for mapping in storage.find_docs("repos", "workspace_id", ws):
+            open_incident = storage.get_open_incident(mapping["id"])
+            out.append({**repositories.public_mapping(mapping), "open_incident_id": open_incident.id if open_incident else None,
+                        "health": "down" if open_incident else "operational" if mapping.get("betterstack_monitor_id") else "unknown"})
+        return out
 
     def recovery_status(incident: Incident, recovery: dict[str, Any] | None) -> str:
         if incident.recovery_phase == "recovering":
@@ -432,8 +453,10 @@ def create_app(
         lease = run.get("lease_expires_at")
         if status == "open":
             state = "working" if lease and lease > now else "waiting"
-        elif status in ("awaiting_merge", "reported"):
+        elif status == "awaiting_merge":
             state = "awaiting_review"
+        elif status == "reported":
+            state = "reported"
         elif status in ("needs_review", "failed", "rejected"):
             state = "needs_attention"
         elif status == "resolved":
@@ -575,6 +598,17 @@ def create_app(
             raise HTTPException(exc.status, str(exc)) from exc
         return ok({"removed": service_id})
 
+    @app.get("/api/v1/agent/config", response_model=Envelope[dict[str, Any]], dependencies=[Depends(signed_in)])
+    def agent_config():
+        return ok(repositories.agent_config())
+
+    @app.put("/api/v1/repositories/{service_id}/agent", response_model=Envelope[dict[str, Any]])
+    def set_repository_agent(service_id: str, body: AgentSettingsIn, ws: str = Depends(workspace)):
+        try:
+            return ok(repositories.set_agent(storage, ws, service_id, body.model_dump()))
+        except repositories.RepoError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
     @app.get("/api/v1/betterstack", response_model=Envelope[dict[str, Any]])
     def betterstack_settings(ws: str = Depends(workspace)):
         return ok(alerts.settings(storage, ws))
@@ -642,7 +676,8 @@ def create_app(
         recent = [incident_out(i, now) for i in incidents(ws, state="resolved", limit=10)]
         return ok(Summary(overall=overall, window=window, services=overviews, active_incidents=active,
                           recent_incidents=recent, monitoring=monitoring(now, ws),
-                          agent_activity=[agent_activity(i, now) for i in open_incidents]))
+                          agent_activity=[agent_activity(i, now) for i in open_incidents],
+                          repositories=repository_overview(ws)))
 
     @app.get("/api/v1/learning", response_model=Envelope[Learning])
     def learning(ws: str = Depends(workspace)):

@@ -20,8 +20,9 @@ export function IncidentRow({ incident }: { incident: Incident }) {
         <div className="min-w-0">
           <p className="truncate text-sm font-medium text-ink">{incident.title.startsWith(incident.service_name) ? incident.title : `${incident.service_name} · ${incident.title}`}</p>
           <p className="truncate text-xs text-muted">
-            {demo ? `Service ${open ? incident.severity : "recovered"}` : FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}
-            {" · "}{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}
+            {incident.evidence.source === "betterstack" ? "Better Stack alert"
+              : <>{demo ? `Service ${open ? incident.severity : "recovered"}` : FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}
+                {" · "}{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}</>}
           </p>
         </div>
         <div className="mt-1.5 md:mt-0"><Badge tone={p.tone}>{p.label}</Badge></div>

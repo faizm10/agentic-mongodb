@@ -194,6 +194,12 @@ the `X-OpsRelay-Secret` header (Better Stack doesn't sign webhooks). The payload
 mapped service. One Better Stack incident is one OpsRelay incident: an exact redelivery is ignored, and
 acknowledged, resolved and reopened events update that same incident.
 
+**Repair agent per repository.** Each mapped repository has an agent switch (off by default) and a mode:
+report only (default; the agent investigates and records a recommendation, no PR) or draft PRs. The shared
+Python worker's live intake picks up a Better Stack incident only when its repository's agent is on, and
+only for the repository that worker is configured for (`GITHUB_OWNER`/`GITHUB_REPO`), using the code area
+chosen from `agents/apps.toml`. It then runs the same Atlas-backed stages as a monitor incident.
+
 ## Durable state in Atlas
 
 | Collection | Owner | Holds |

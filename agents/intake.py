@@ -33,6 +33,7 @@ from agents.orchestrator import ingest_live_incident, live_incident_id
 log = logging.getLogger("agents.intake")
 
 UPTIME_INCIDENTS = "uptime_incidents"  # owned by Taha's uptime monitor; read only here
+REPO_MAPPINGS = "opsrelay_repos"  # dashboard repository -> service mappings, with per-repo agent settings; read only
 MAX_AGE_HOURS = 24
 
 # Taha's ErrorKind -> agents.contracts.FailureKind, where they map 1:1
@@ -123,11 +124,12 @@ class LiveIntake:
 
     def poll(self) -> list[str]:
         """Record new open uptime incidents. Returns the ids of incidents created."""
-        query = {"state": "open", "app": {"$in": ["shopping", "messaging"]},
-                 "started_at": {"$gte": self.clock() - self.max_age}}
-        fresh = [d for d in self.db[UPTIME_INCIDENTS].find(query).sort("started_at", 1)
+        query = {"state": "open", "started_at": {"$gte": self.clock() - self.max_age},
+                 "$or": [{"app": {"$in": ["shopping", "messaging"]}}, {"evidence.source": "betterstack"}]}
+        fresh = [(d, live) for d in self.db[UPTIME_INCIDENTS].find(query).sort("started_at", 1)
                  if d["_id"] not in self._skipped
-                 and not m.incidents(self.db).count_documents({"_id": live_incident_id(self.repo, d["_id"])}, limit=1)]
+                 and not m.incidents(self.db).count_documents({"_id": live_incident_id(self.repo, d["_id"])}, limit=1)
+                 and (live := self._handoff(d))]
         if not fresh:
             return []
         sha = self.resolve_sha()
@@ -135,8 +137,7 @@ class LiveIntake:
             log.warning("deployed commit unknown; will retry %d live incident(s) next poll", len(fresh))
             return []
         created = []
-        for doc in fresh:
-            live = handoff_from_uptime(doc)
+        for doc, live in fresh:
             duplicate = m.incidents(self.db).find_one(
                 {"app": live["app"], "commit_sha": sha, "source": {"$ne": m.SOURCE_LIVE},
                  "status": {"$in": [m.STATUS_OPEN, m.STATUS_AWAITING_MERGE]}}, {"_id": 1})
@@ -149,3 +150,16 @@ class LiveIntake:
             if was_created:
                 created.append(iid)
         return created
+
+    def _handoff(self, doc: dict) -> dict | None:
+        """Monitor incidents always; Better Stack alerts only for a mapped repo whose agent is switched on."""
+        if (doc.get("evidence") or {}).get("source") != "betterstack":
+            return handoff_from_uptime(doc)
+        mapping = self.db[REPO_MAPPINGS].find_one({"_id": doc.get("service_id")}) or {}
+        agent = mapping.get("agent") or {}
+        if not agent.get("enabled") or (mapping.get("repo") or "").lower() != self.repo.lower():
+            return None  # checked again next poll, so switching the agent on picks up open alerts
+        evidence = doc["evidence"]
+        live = handoff_from_uptime({**doc, "app": agent["app"]})  # the code area the agent repairs, not the repo name
+        return {**live, "report_only": agent.get("mode") != "draft_pr",
+                "alert": {k: evidence.get(k) for k in ("cause", "url", "response_url", "betterstack_incident_id")}}
