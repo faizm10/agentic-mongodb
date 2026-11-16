@@ -40,9 +40,8 @@ These endpoints were confirmed from each app's code (`shopping/backend/app/main.
 9. [API reference](#api-reference)
 10. [Integration with the OpsRelay agents (Developers 1–3)](#integration-with-the-opsrelay-agents)
 11. [Tests](#tests)
-12. [Demo outage controls](#demo-outage-controls)
-13. [Demo: degraded, down and recovery](#demo-degraded-down-and-recovery)
-14. [Known limitations](#known-limitations)
+12. [Sites and dashboard features](#sites-and-dashboard-features)
+13. [Known limitations](#known-limitations)
 
 ---
 
@@ -238,13 +237,13 @@ Base URL `http://localhost:8300`. Every success is `{"data": …, "meta": {"gene
 | GET | `/api/v1/incidents/{id}` | Incident with timeline, links and `related_ci` (agents' CI runs and PRs, MongoDB only) |
 | GET | `/api/v1/incidents/{id}/evidence` | **AI hand-off** (`opsrelay.uptime_incident.v1`) |
 | PATCH | `/api/v1/services/{id}` | `{"enabled": bool}`: pause or resume monitoring of a service |
-| POST | `/api/v1/monitor/check-now` | Run (`serve`) or request (`worker`) an immediate cycle |
-| POST | `/api/v1/demo/outages/{novamart\|novaconnect}` | Start one of the supported local demo outages (`{"scenario": "..."}`) |
-| DELETE | `/api/v1/demo/outages/{novamart\|novaconnect}` | Restore the selected app |
-| POST | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Push a real catalog bug to the base branch (`{"scenario": 1-3}`); see [Demo outage controls](#demo-outage-controls) |
-| DELETE | `/api/v1/demo/bad-deploys/{novamart\|novaconnect}` | Undo the live bad deploy: restore the checkout and push a revert if the fix is not merged |
+| POST | `/api/v1/monitor/check-now` | Check this workspace's sites now |
+| GET | `/api/v1/sites` | This workspace's sites (`id`, `name`, `url`, `health_url`) |
+| POST | `/api/v1/sites` | `{"name", "url", "health_url"?}`: add a site and check it once |
+| DELETE | `/api/v1/sites/{id}` | Stop monitoring a site |
+| POST | `/api/v1/cron/check` | One cycle for every workspace; needs `Authorization: Bearer $OPSRELAY_CRON_SECRET` (the GitHub Actions schedule) |
 | POST | `/api/v1/incidents/{id}/acknowledge` | `{"by", "note"}` |
-| POST | `/api/v1/incidents/{id}/fix-confirmation` | `{"resolved": bool}` after the agent's PR is merged. `true` applies the fix to the running app and rechecks; `false` records that it is still broken |
+| POST | `/api/v1/incidents/{id}/fix-confirmation` | `{"resolved": bool}` after the agent's PR is merged. `true` asks for a recheck; `false` records that it is still broken |
 | POST | `/api/v1/assistant/chat` | `{"messages": [{"role", "content"}], "incident_id"?}`: plain-language answers about current incidents (needs `OPENAI_API_KEY`) |
 | POST | `/api/v1/incidents/{id}/links` | `{"kind": "github_actions_run"\|"repair_pr"\|"other", "url": "https://…", "label"}`: idempotent per URL |
 
@@ -305,13 +304,14 @@ Every storage-touching test runs twice: on SQLite and on MongoDB (`mongomock`). 
 
 ---
 
-## Demo outage controls
+## Sites and dashboard features
 
-Run NovaMart, NovaConnect, and the uptime API from the **same repository checkout** (`./dev.sh` does this). Each app has three controls on the dashboard overview. Each one ships a **bad deploy**: a real one-line bug from the app's `inject_bug.py` catalog, so the AI agent has code to fix. Labels describe what customers would notice. The dashboard, its requests and the commit never say where the bug is. One NovaMart control is different: **Payments failing (Stripe down)** simulates a payment-provider outage. It ships no code; the checkout probe reports the Stripe API as an `external:` dependency, and the agent records that there is no code fix instead of opening a PR.
-
-Shipping one commits the bug on top of `origin/main` with a routine-looking message and **pushes it to `main`**, then applies the same change to the running checkout so the dev servers serve it. Your current branch, index and other files are not touched; the commit is built in a temporary index. The checkout probe fails within one cycle, the AI agent picks up the incident, reproduces it with the app's tests, and opens a draft fix PR against `main`. The CI run that fails on the same commit is skipped while the live incident covers it, so you get one PR.
-
-**Restore** puts the checkout back and, if the bug is still on `main`, pushes a revert commit. After merging the agent's PR, use it to restore the local checkout; it does not push again. One bad deploy can be live per app. The push uses your normal git credentials for `origin`. Set `OPSRELAY_DEPLOY_REMOTE` or `OPSRELAY_DEPLOY_BRANCH` to push elsewhere. **Pushing to `main` affects everyone using the repository until the bug is fixed or reverted.**
+Each workspace adds its own sites under **Sites**: a page URL and, optionally, a health URL. The page must load
+(2xx/3xx); a health URL must answer 2xx and, if it returns JSON with a `status`, report ok/healthy. A site is checked
+once when it is added, then every 5 minutes by the `uptime-checks` GitHub Actions workflow, which calls
+`POST /api/v1/cron/check` with the `OPSRELAY_CRON_SECRET` repository secret (the same value is set on the API).
+Locally, `python -m uptime serve` checks on its own schedule instead. Entries under `[[services]]` in
+`services.toml` still work for a self-hosted setup; they belong to the `demo` workspace.
 
 The **Agent dependencies** section checks GitHub, MongoDB Atlas, and OpenAI every 30 seconds and shows connection or access failures with a next step. GitHub reachability is checked even without an agent token; repository access is checked when `GITHUB_TOKEN` and `GITHUB_OWNER` are configured. MongoDB uses a read-only `ping` when `MONGODB_URI` is present. OpenAI checks API access when `OPENAI_API_KEY` is present; it does not run a model or incur generation costs. Missing settings appear as **Not configured**. The `/api/v1/dependencies` response never includes credentials, connection strings, or provider response bodies.
 
@@ -319,34 +319,9 @@ The **AI learning** section shows what the repair agent's reinforcement-learning
 
 When an incident opens, the overview also shows **AI repair agent** activity for that incident: its state, last verified stage, latest recorded action, timestamps, and a repair PR link when available. This panel refreshes with the status page every 10 seconds and does not show raw failure evidence or the selected demo scenario. The data comes from the repair agent's `incidents` and `workflow_steps` collections in the **same MongoDB database** as the uptime monitor. In local SQLite mode, the panel says the agent is not connected. The root `dev.sh` launcher also starts the repair agent worker when `.env` sets `MONGODB_URI`. Set `DEV_AGENT=0` to skip it, or run `python -m agents.orchestrator worker` yourself.
 
-When the agent's PR is merged (the agent checks GitHub every 30 seconds), its panel asks **Did this fix the problem?** **Yes** applies the merged fix to the running app and asks for a new check, so the incident resolves once the probe passes. **No** records that it is still broken and leaves the incident open.
+When the agent's PR is merged (the agent checks GitHub every 30 seconds), its panel asks **Did this fix the problem?** **Yes** asks for a new check, so the incident resolves once the site passes. **No** records that it is still broken and leaves the incident open.
 
 **Ask the assistant** (bottom right on every page) answers questions about current incidents and the agent's progress in everyday words. On an incident page it focuses on that incident. It uses `OPENAI_API_KEY` (model: `OPSRELAY_ASSISTANT_MODEL`, else `OPENAI_MODEL`, else `gpt-4.1-mini`) and only sees service status, failed checks without code locations, and the agent's summary. It avoids file and code details unless asked for technical details.
-
-The older flag-file outages (`/api/v1/demo/outages`, no code change) remain in the API. The agent reports them as configuration and hands them to a person, because there is no code to fix.
-
-## Demo: degraded, down and recovery
-
-With NovaMart, NovaConnect, `uptime serve` and the dashboard running:
-
-1. Open http://localhost:3300. Both services are **Operational**.
-2. On a **local demo branch** (never committed), break NovaMart's checkout logic:
-   ```bash
-   git switch -c demo/uptime-discount-scenario
-   python3 shopping/inject_bug.py inject discount
-   ```
-   NovaMart's homepage still returns 200, but its checkout probe returns 503. Within the next 30 s cycle the dashboard shows **NovaMart · Degraded** while NovaConnect stays **Operational**. An incident opens, routed `investigate` with suspect source `backend/app/pricing.py::compute_discount`.
-3. Reset:
-   ```bash
-   python3 shopping/inject_bug.py reset all
-   git switch - && git branch -D demo/uptime-discount-scenario
-   ```
-   The next successful check returns NovaMart to **Operational**. The incident is **resolved** and shows its duration.
-4. Stop the NovaConnect backend (Ctrl-C its uvicorn). It shows **Down** (backend unreachable, route `service_health`), not Degraded. Restart it to see the recovery.
-
-To see results without waiting for the next slot, use `POST /api/v1/monitor/check-now` or `python -m uptime check`.
-
----
 
 ## Known limitations
 
