@@ -305,3 +305,51 @@ def test_workspace_connects_github_and_maps_repositories(tmp_path, settings, clo
     assert other.delete("/api/v1/repositories/shop").status_code == 404
     assert owner.delete("/api/v1/repositories/shop").status_code == 200
     assert [m["service_id"] for m in owner.get("/api/v1/repositories").json()["data"]] == ["chat-api"]
+
+
+def test_betterstack_alerts_route_to_their_workspace_and_replays_update_one_incident(tmp_path, settings, clock):
+    storage = make_sqlite(tmp_path)
+    app = create_app(storage, settings, clock=clock)
+    owner = signed_in(app)
+    storage.insert_doc("repos", "demo:shop", {"id": "demo:shop", "workspace_id": "demo", "service_id": "shop", "service_name": "Shop",
+                                              "repo": "octo/shop", "base_branch": "main", "deployed_url": "https://shop.example",
+                                              "workflow": None, "created_at": "2026-03-02T12:00:00Z"})
+    hook = owner.post("/api/v1/betterstack").json()["data"]
+    assert owner.put("/api/v1/repositories/shop/betterstack", json={"monitor_id": "42"}).status_code == 200
+
+    def alert(path=hook["webhook_path"], secret=hook["secret"], monitor="42", **attrs):
+        body = {"data": {"id": "9001", "type": "incident",
+                         "attributes": {"cause": "Status 500", "url": "https://shop.example", "started_at": "2026-03-02T11:59:00Z",
+                                        "acknowledged_at": None, "resolved_at": None, **attrs},
+                         "relationships": {"monitor": {"data": {"id": monitor, "type": "monitor"}}}}}
+        return TestClient(app).post(path, json=body, headers={"X-OpsRelay-Secret": secret} if secret else {})
+
+    assert alert(secret=None).status_code == 401 and alert(secret="wrong").status_code == 401
+    created = alert().json()["data"]
+    assert created["result"] == "created"
+    incident_id = created["incident_id"]
+    events = len(owner.get(f"/api/v1/incidents/{incident_id}").json()["data"]["events"])
+    assert alert().json()["data"] == {"result": "duplicate", "incident_id": incident_id}, "a redelivery changes nothing"
+    listed = owner.get("/api/v1/incidents").json()["data"]
+    assert [(i["id"], i["service_name"]) for i in listed if i["id"].startswith("BS-")] == [(incident_id, "Shop")]
+    assert len(owner.get(f"/api/v1/incidents/{incident_id}").json()["data"]["events"]) == events
+
+    assert alert(acknowledged_at="2026-03-02T12:01:00Z").json()["data"] == {"result": "updated", "incident_id": incident_id}
+    resolved = {"acknowledged_at": "2026-03-02T12:01:00Z", "resolved_at": "2026-03-02T12:05:00Z"}
+    assert alert(**resolved).json()["data"]["result"] == "updated"
+    assert alert(**resolved).json()["data"]["result"] == "duplicate"
+    assert owner.get(f"/api/v1/incidents/{incident_id}").json()["data"]["state"] == "resolved"
+    assert alert(cause="Timeout").json()["data"] == {"result": "updated", "incident_id": incident_id}, "reopened"
+    reopened = owner.get(f"/api/v1/incidents/{incident_id}").json()["data"]
+    assert reopened["state"] == "open" and reopened["events"][-1]["type"] == "relapsed"
+    assert alert(monitor="7").json()["data"]["result"] == "ignored"
+    assert owner.get("/api/v1/betterstack").json()["data"]["last_delivery"]["result"] == "ignored"
+
+    other = signed_in(app, "other@example.com")
+    other.post("/api/v1/workspaces", json={"name": "Other"})
+    other_hook = other.post("/api/v1/betterstack").json()["data"]
+    assert alert(path=other_hook["webhook_path"], secret=other_hook["secret"]).json()["data"]["result"] == "ignored", \
+        "monitor 42 is only mapped in the owner's workspace"
+    assert alert(path=hook["webhook_path"], secret=other_hook["secret"]).status_code == 401
+    assert other.get(f"/api/v1/incidents/{incident_id}").status_code == 404
+    assert other.put("/api/v1/repositories/shop/betterstack", json={"monitor_id": "42"}).status_code == 404

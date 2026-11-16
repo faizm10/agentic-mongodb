@@ -22,7 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, assistant, repositories, bad_deploys, demo_outages, demo_traffic, walkthrough
+from . import __version__, accounts, alerts, assistant, repositories, bad_deploys, demo_outages, demo_traffic, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -230,6 +230,10 @@ class GitHubConnectIn(BaseModel):
     token: str = Field(min_length=20, max_length=255)
 
 
+class MonitorMappingIn(BaseModel):
+    monitor_id: str | None = Field(default=None, pattern=r"^[0-9]{1,20}$")
+
+
 class RepositoryIn(BaseModel):
     repo: str = Field(pattern=r"^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$", max_length=140)
     service_name: str = Field(min_length=1, max_length=60)
@@ -354,8 +358,18 @@ def create_app(
                 return s
         raise HTTPException(404, f"Unknown service '{service_id}'.")
 
+    def service_keys(ws: str) -> list[str]:
+        """Monitored services plus mapped repositories (whose incidents come from Better Stack alerts)."""
+        return [s.id for s in services(ws)] + [m["id"] for m in storage.find_docs("repos", "workspace_id", ws)]
+
+    def service_name(service_id: str) -> str:
+        if configured := next((s for s in settings.services if s.id == service_id), None):
+            return configured.name
+        mapping = storage.get_doc("repos", service_id) if ":" in service_id else None
+        return mapping["service_name"] if mapping else service_id
+
     def incidents(ws: str, *, state: str | None = None, limit: int = 50) -> list[Incident]:
-        found = [i for s in services(ws) for i in storage.list_incidents(service_id=s.id, state=state, limit=limit)]
+        found = [i for key in service_keys(ws) for i in storage.list_incidents(service_id=key, state=state, limit=limit)]
         return sorted(found, key=lambda i: i.started_at, reverse=True)[:limit]
 
     def current(service: ServiceConfig, now: datetime) -> CurrentStatus:
@@ -385,7 +399,6 @@ def create_app(
                                current=current(service, now), uptime=stats, bars=b)
 
     def incident_out(incident: Incident, now: datetime, *, related: bool = False) -> IncidentOut:
-        names = {s.id: s.name for s in settings.services}
         related_ci = []
         if related:
             for doc in storage.find_agent_incidents(incident.app, incident.started_at, incident.resolved_at or now):
@@ -397,7 +410,7 @@ def create_app(
         recovery = storage.get_recovery(incident.id) if (related or incident.recovery_phase) else None
         state = storage.get_state(incident.service_id)
         return IncidentOut(**incident.model_dump(), duration_seconds=incident.elapsed_seconds(now),
-                           service_name=names.get(incident.service_id, incident.service_id), related_ci=related_ci,
+                           service_name=service_name(incident.service_id), related_ci=related_ci,
                            service_health=state.status if state else "unknown",
                            recovery_status=recovery_status(incident, recovery), recovery=recovery)
 
@@ -410,7 +423,7 @@ def create_app(
         return "complete" if recovery and recovery.get("phase") == "complete" else "not_needed"
 
     def agent_activity(incident: Incident, now: datetime) -> AgentActivity:
-        name = next((s.name for s in settings.services if s.id == incident.service_id), incident.service_id)
+        name = service_name(incident.service_id)
         run = storage.get_agent_activity(incident.id)
         if run is None:
             state = "unavailable" if storage.describe()["backend"] != "mongodb" else "waiting"
@@ -443,14 +456,13 @@ def create_app(
         open_incidents = incidents(ws, state="open")
         if focus and not any(i.id == focus for i in open_incidents):
             open_incidents.append(incident_or_404(focus, ws))
-        names = {s.id: s.name for s in services(ws)}
         return {
             "now": now,
             "services": [{"name": o.name, "status": o.current.status, "summary": o.current.summary}
                          for o in (overview(s, "24h", now, bars=False) for s in services(ws))],
             "viewing_incident": focus,
             "incidents": [{
-                "id": i.id, "app": names.get(i.service_id, i.service_id), "state": i.state, "severity": i.severity,
+                "id": i.id, "app": service_name(i.service_id), "state": i.state, "severity": i.severity,
                 "title": i.title, "started_at": i.started_at, "resolved_at": i.resolved_at,
                 "failed_checks": assistant.plain_failures(i.evidence),
                 "fix_confirmation_by_person": fix_confirmation(i),
@@ -563,6 +575,34 @@ def create_app(
             raise HTTPException(exc.status, str(exc)) from exc
         return ok({"removed": service_id})
 
+    @app.get("/api/v1/betterstack", response_model=Envelope[dict[str, Any]])
+    def betterstack_settings(ws: str = Depends(workspace)):
+        return ok(alerts.settings(storage, ws))
+
+    @app.post("/api/v1/betterstack", response_model=Envelope[dict[str, Any]])
+    def betterstack_rotate(ws: str = Depends(workspace)):
+        """Create or replace this workspace's webhook URL and secret (the secret is only returned here)."""
+        return ok(alerts.rotate(storage, ws, clock()))
+
+    @app.put("/api/v1/repositories/{service_id}/betterstack", response_model=Envelope[dict[str, Any]])
+    def map_betterstack_monitor(service_id: str, body: MonitorMappingIn, ws: str = Depends(workspace)):
+        try:
+            return ok(alerts.map_monitor(storage, ws, service_id, body.monitor_id))
+        except alerts.AlertError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+
+    @app.post("/api/v1/webhooks/betterstack/{hook_id}", response_model=Envelope[dict[str, Any]])
+    async def betterstack_webhook(hook_id: str, request: Request):
+        """Called by Better Stack, not the dashboard: authenticated by the per-workspace secret header."""
+        payload = await request.json()
+        try:
+            result = alerts.receive(storage, hook_id, request.headers.get(alerts.SECRET_HEADER),
+                                    payload if isinstance(payload, dict) else {}, clock())
+        except alerts.AlertError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        logger.info("Better Stack webhook %s: %s", hook_id[:6], result)
+        return ok(result)
+
     @app.post("/api/v1/workspaces", response_model=Envelope[dict[str, Any]])
     def create_workspace(body: WorkspaceIn, user: dict[str, Any] = Depends(signed_in)):
         ws = accounts.create_workspace(storage, user["id"], body.name, clock())
@@ -673,7 +713,7 @@ def create_app(
 
     def incident_or_404(incident_id: str, ws: str) -> Incident:
         incident = storage.get_incident(incident_id)
-        if incident is None or not any(s.id == incident.service_id for s in services(ws)):
+        if incident is None or incident.service_id not in service_keys(ws):
             raise HTTPException(404, f"Unknown incident '{incident_id}'.")
         return incident
 
