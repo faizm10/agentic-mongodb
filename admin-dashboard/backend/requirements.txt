@@ -3,7 +3,7 @@ fastapi==0.162.7
 pydantic==2.14.3
 uvicorn==0.54.0
 httpx==0.28.1
-pymongo==4.19.0
+pymongo==4.20.0
 python-dotenv==1.2.4
 # Testing (mongomock exercises the MongoDB code path offline, as agents/tests does)
 mongomock==4.3.0
