@@ -8,6 +8,7 @@ WebSocket connects to ``/ws/<user id>``. There is no real authentication.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -22,10 +23,11 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from . import __version__, conversations, db, delivery, demo_outage, messages, monitor, users
+from . import __version__, confirmations, conversations, db, delivery, demo_outage, messages, monitor, users
 from .errors import MessageServiceUnavailableError, MessagingError
 from .realtime import ConnectionManager
 from .schemas import (
+    ConfirmationIn,
     ConversationOut,
     ConversationSettingsIn,
     CreateConversationIn,
@@ -170,6 +172,50 @@ def create_app(
         if report["status"] != "healthy":
             _log(logging.ERROR, "messaging_probe_failed", failed_checks=report["failed_checks"], report=report)
         return JSONResponse(status_code=200 if report["status"] == "healthy" else 503, content=report)
+
+    # ---------------------------------------------------------- confirmations
+    confirmation_sends = {"count": 0}  # drives the alternating "mixed" demo fault
+
+    @app.post("/api/confirmations", tags=["confirmations"])
+    async def create_confirmation(body: ConfirmationIn, request: Request):
+        fault = demo_outage.confirmation_fault(path)
+        behaviour = None
+        if fault is not None:
+            fault_mode, delay = fault
+            confirmation_sends["count"] += 1
+            behaviour = (("drop", "lost_response")[(confirmation_sends["count"] - 1) % 2]
+                         if fault_mode == "mixed" else fault_mode)
+            if behaviour == "drop":
+                await asyncio.sleep(delay)
+                _log(logging.WARNING, "confirmation_dropped", confirmation_id=body.confirmation_id,
+                     checkout_id=body.checkout_id, request_id=request.state.request_id)
+                raise MessageServiceUnavailableError("The confirmation request was not processed.")
+        confirmation, created = confirmations.record_confirmation(
+            conn, confirmation_id=body.confirmation_id, checkout_id=body.checkout_id, order_id=body.order_id,
+            recipient=body.recipient, body=body.body, probe=body.probe, now=now(),
+            request_id=request.state.request_id,
+        )
+        if confirmation["status"] == confirmations.ACCEPTED and behaviour != "pending":
+            confirmation = confirmations.mark_delivered(conn, body.confirmation_id, now())
+        _log(logging.INFO, "confirmation_recorded" if created else "confirmation_replayed",
+             confirmation_id=body.confirmation_id, checkout_id=body.checkout_id, order_id=body.order_id,
+             status=confirmation["status"], probe=body.probe, request_id=request.state.request_id)
+        if behaviour == "lost_response":
+            await asyncio.sleep(fault[1])
+        return JSONResponse(status_code=201 if created else 200, content=confirmation,
+                            headers={"Idempotent-Replay": "false" if created else "true"})
+
+    @app.get("/api/confirmations/{confirmation_id}", tags=["confirmations"])
+    async def get_confirmation(confirmation_id: str):
+        fault = demo_outage.confirmation_fault(path)
+        if fault is not None and fault[0] == "lookup_timeout":
+            await asyncio.sleep(fault[1])
+        return confirmations.get_confirmation(conn, confirmation_id)
+
+    @app.get("/api/confirmations", tags=["confirmations"])
+    def list_confirmations(order_id: str = Query(min_length=1, max_length=64)) -> dict[str, Any]:
+        found = confirmations.list_for_order(conn, order_id)
+        return {"order_id": order_id, "count": len(found), "confirmations": found}
 
     # ------------------------------------------------------------------ users
     @app.get("/api/users", response_model=list[UserOut], tags=["users"])
