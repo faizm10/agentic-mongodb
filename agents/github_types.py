@@ -318,6 +318,7 @@ class PullRequestInfo(_Serializable):
     head_sha: str
     base_ref: str
     title: str = ""
+    merge_sha: Optional[str] = None
 
 
 @dataclass
