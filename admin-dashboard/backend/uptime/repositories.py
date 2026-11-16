@@ -122,7 +122,9 @@ def public_mapping(m: dict) -> dict:
 def agent_config() -> dict:
     """What the shared Python worker can investigate: its repository and the code areas in agents/apps.toml."""
     owner, name = os.environ.get("GITHUB_OWNER", ""), os.environ.get("GITHUB_REPO", "opsrelay-agent")
-    apps = sorted(tomllib.loads(AGENT_APPS.read_text()).get("apps", {})) if AGENT_APPS.exists() else []
+    # Frontend (node) apps only take CI failures, so they aren't offered for live incidents.
+    apps = sorted(k for k, a in tomllib.loads(AGENT_APPS.read_text()).get("apps", {}).items()
+                  if a.get("kind", "python") == "python") if AGENT_APPS.exists() else []
     return {"worker_repo": f"{owner}/{name}" if owner else None, "apps": apps}
 
 
