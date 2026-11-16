@@ -810,6 +810,7 @@ def main() -> None:
     st.add_argument("incident_id")
     st.add_argument("--reason", default="manual stop")
     sub.add_parser("list", help="list recent incidents")
+    sub.add_parser("reembed", help="re-embed stored memories with the current embedding model")
     a = p.parse_args()
 
     if a.cmd == "setup":
@@ -859,6 +860,9 @@ def main() -> None:
     elif a.cmd == "stop":
         request_stop(a.incident_id, a.reason, by=os.getenv("USER", "operator"))
         print("stop requested")
+    elif a.cmd == "reembed":
+        for coll, field in ((m.memories(), "failure_text"), (rl_policy.experiences(), "state_text")):
+            print(f"{coll.name}: {memory.reembed(coll, field)} re-embedded with {memory.embedding_model()}")
     elif a.cmd == "list":
         for inc in m.incidents().find({}, {"status": 1, "stage": 1, "pr.url": 1,
                                           "created_at": 1}).sort("created_at", -1).limit(20):
