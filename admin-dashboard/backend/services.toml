@@ -24,6 +24,8 @@ functional_path = "/api/health/checkout"
 functional_method = "GET"
 timeout_seconds = 5
 functional_timeout_seconds = 10
+# Checkouts interrupted by an outage are reconciled (agents/recovery.py) before the incident closes.
+recovery = "checkout_attempts"
 
 [[services]]
 id = "novaconnect"
