@@ -35,6 +35,7 @@ from datetime import timedelta
 from pathlib import Path
 
 from agents import mongodb as m
+from agents import verifier
 
 log = logging.getLogger("agents.worker")
 APPS = ("shopping", "messaging")
@@ -79,8 +80,10 @@ def load_config(env: dict[str, str] | None = None) -> tuple[Config, list[str]]:
         shutdown_grace=int(env.get("OPSRELAY_SHUTDOWN_GRACE_SECONDS", "60")),
         heartbeat_file=Path(env.get("OPSRELAY_HEARTBEAT_FILE", "/tmp/opsrelay-heartbeat.json")),
         live_intake=env.get("OPSRELAY_LIVE_INTAKE", "1") not in ("0", "false", "no"),
-        runner=env.get("OPSRELAY_VERIFIER_RUNNER", "process"),
+        runner=env.get("OPSRELAY_VERIFIER_RUNNER", "auto"),
     )
+    if cfg.runner == "auto":
+        cfg.runner = "docker" if env.get("OPSRELAY_VERIFIER_IMAGE") and verifier.docker_reachable() else "process"
     if not cfg.repo_path or not (Path(cfg.repo_path) / ".git").exists():
         errors.append("OPSRELAY_REPO_PATH must be a git clone of the target repository")
     if env.get("OPSRELAY_DEMO_FAST_FIX") == "1":
@@ -99,11 +102,8 @@ def load_config(env: dict[str, str] | None = None) -> tuple[Config, list[str]]:
     if cfg.runner == "docker":
         if not env.get("OPSRELAY_VERIFIER_IMAGE"):
             errors.append("OPSRELAY_VERIFIER_IMAGE is required with OPSRELAY_VERIFIER_RUNNER=docker")
-    elif env.get("OPSRELAY_ALLOW_PROCESS_VERIFIER") == "1" or cfg.env != "production":
-        cfg.fallbacks.append("verifier: process runner (scrubbed env, no network isolation)")
     else:
-        errors.append("production needs OPSRELAY_VERIFIER_RUNNER=docker "
-                      "(or OPSRELAY_ALLOW_PROCESS_VERIFIER=1 to accept the process fallback)")
+        cfg.fallbacks.append("verifier: process runner, no Docker (scrubbed env; no network or filesystem isolation)")
     if not env.get("VOYAGE_API_KEY"):
         cfg.fallbacks.append("embeddings: local hashing model (VOYAGE_API_KEY unset)")
     return cfg, errors
