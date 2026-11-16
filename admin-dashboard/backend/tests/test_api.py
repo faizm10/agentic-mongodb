@@ -550,3 +550,39 @@ def test_sentry_issue_webhooks_are_signed_and_roll_up_into_one_incident(tmp_path
     assert deliver("ignored", issue_id="12").json()["data"]["result"] == "resolved"
     incident = owner.get(f"/api/v1/incidents/{created['incident_id']}").json()["data"]
     assert incident["state"] == "resolved" and incident["service_name"] == "Shop"
+
+
+def test_failed_vercel_production_deploy_opens_an_incident_until_the_next_ready_one(tmp_path, settings, clock, monkeypatch):
+    latest = {"uid": "dpl_1", "state": "ERROR", "created": 1_780_000_000_000, "url": "shop-abc.vercel.app",
+              "meta": {"githubCommitSha": "abc1234def"}, "inspectorUrl": "https://vercel.com/octo/shop/dpl_1"}
+
+    def api(request: httpx.Request) -> httpx.Response:
+        if request.headers["authorization"] != "Bearer vercel_token_for_tests_0001":
+            return httpx.Response(403)
+        if request.url.path == "/v2/user":
+            return httpx.Response(200, json={"user": {"username": "octo"}})
+        assert request.url.params["projectId"] == "shop" and request.url.params["target"] == "production"
+        return httpx.Response(200, json={"deployments": [latest]})
+
+    monkeypatch.setenv("OPSRELAY_CRON_SECRET", "s3cret")
+    storage = make_sqlite(tmp_path)
+    app = create_app(storage, settings, clock=clock, vercel_transport=httpx.MockTransport(api))
+    owner = signed_in(app)
+    storage.insert_doc("repos", "demo:shop", {"id": "demo:shop", "workspace_id": "demo", "service_id": "shop", "service_name": "Shop",
+                                              "repo": "octo/shop", "base_branch": "main", "deployed_url": "https://shop.example",
+                                              "workflow": None, "created_at": "2026-03-02T12:00:00Z"})
+    assert owner.put("/api/v1/vercel", json={"token": "wrong_token_for_tests_000000"}).status_code == 422
+    assert owner.put("/api/v1/vercel", json={"token": "vercel_token_for_tests_0001"}).json()["data"]["login"] == "octo"
+    owner.put("/api/v1/repositories/shop/vercel", json={"project": "shop"}).raise_for_status()
+
+    def scheduled():
+        return TestClient(app).post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"}).json()["data"]["vercel"]
+
+    assert scheduled() == {"created": 1}
+    [incident] = [i for i in owner.get("/api/v1/incidents").json()["data"] if i["evidence"].get("source") == "vercel"]
+    assert incident["severity"] == "degraded" and incident["service_health"] == "degraded"
+    latest.update(uid="dpl_2", state="BUILDING")
+    assert scheduled() == {"building": 1}  # still open while the next deploy builds
+    latest.update(state="READY")
+    assert scheduled() == {"resolved": 1}
+    assert owner.get("/api/v1/repositories").json()["data"][0]["vercel"]["state"] == "READY"

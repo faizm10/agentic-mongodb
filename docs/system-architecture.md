@@ -186,6 +186,12 @@ Sentry project slug. Issues created or unresolved join the repository's open set
 ones leave it, and the set drives one incident per repository (`uptime/rollup.py`, shared with Dependabot):
 degraded, or down if any issue is fatal, resolved when the set is empty. A redelivery changes nothing.
 
+**Vercel deployments.** A workspace saves a Vercel token (and a team id for team projects) under
+**Connectors**; each mapped service names its Vercel project. The scheduled check reads the project's
+latest production deployment: `ERROR` opens the repository's Vercel rollup incident (degraded, since the
+previous deployment keeps serving), the next `READY` one resolves it, and a deployment still building
+changes nothing.
+
 **Notifications.** Under **Connectors**, a workspace can add outgoing connectors: Slack and Discord
 incoming webhooks, a generic webhook (JSON signed with `X-OpsRelay-Signature: sha256=<HMAC of the body>`,
 its secret shown once, every request through the private-URL guard) and PagerDuty (Events API v2:

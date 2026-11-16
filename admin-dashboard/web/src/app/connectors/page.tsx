@@ -5,6 +5,7 @@ import { PageHeader, Shell, Skeleton } from "@/components/ui";
 import { send, usePoll } from "@/lib/api";
 
 type Connection = { connected: boolean; login?: string; connected_at?: string };
+type VercelConnection = { connected: boolean; login?: string; team_id?: string | null };
 type Sentry = { configured: boolean; webhook_path?: string; has_secret?: boolean;
   last_delivery?: { at: string; result: string; reason?: string; incident_id?: string } | null };
 type Notifier = { kind: string; label: string; configured: boolean; target?: string;
@@ -22,6 +23,7 @@ export default function Connectors() {
           <GitHubPanel connection={github.data} onChange={github.reload} />
           <BetterStackPanel />
           <SentryPanel />
+          <VercelPanel />
           <NotificationsPanel />
         </div>
       )}
@@ -265,6 +267,59 @@ function SentryPanel() {
         </>
       )}
       {error && <p className="text-sm text-crit" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function VercelPanel() {
+  const conn = usePoll<VercelConnection>("/api/v1/vercel", 60_000);
+  const [form, setForm] = useState({ token: "", team_id: "" });
+  const [pending, setPending] = useState(false);
+  const [error, setError] = useState("");
+  const run = async (action: () => Promise<unknown>) => {
+    setPending(true);
+    setError("");
+    try {
+      await action();
+      setForm({ token: "", team_id: "" });
+      conn.reload();
+    } catch (e) {
+      setError((e as Error).message);
+    } finally {
+      setPending(false);
+    }
+  };
+  if (!conn.data) return null;
+  return (
+    <section className="panel p-5">
+      <h2 className="text-sm font-semibold">Vercel deployments</h2>
+      {conn.data.connected ? (
+        <div className="mt-2 flex flex-wrap items-center gap-3 text-sm">
+          <span className="badge tone-ok">Connected as {conn.data.login}{conn.data.team_id ? ` · team ${conn.data.team_id}` : ""}</span>
+          <button type="button" className="btn" disabled={pending} onClick={() => run(() => send("DELETE", "/api/v1/vercel"))}>Disconnect</button>
+          <p className="basis-full text-xs text-muted">Set each service&apos;s Vercel project on the Repositories page. A failed production deploy opens an incident until the next one is ready.</p>
+        </div>
+      ) : (
+        <form className="mt-2 space-y-3" onSubmit={(e) => { e.preventDefault(); run(() => send("PUT", "/api/v1/vercel", { token: form.token, team_id: form.team_id || null })); }}>
+          <p className="text-sm text-muted">
+            Paste a <a className="text-accent hover:underline" href="https://vercel.com/account/settings/tokens" target="_blank" rel="noreferrer">Vercel token</a>.
+            For projects owned by a team, add the team ID (Team Settings → General). It stays on the server.
+          </p>
+          <div className="flex flex-wrap gap-2">
+            <label className="min-w-0 flex-1">
+              <span className="sr-only">Vercel token</span>
+              <input className="input font-mono" type="password" autoComplete="off" placeholder="Vercel token" value={form.token}
+                onChange={(e) => setForm({ ...form, token: e.target.value })} required minLength={20} />
+            </label>
+            <label className="w-48">
+              <span className="sr-only">Team ID (optional)</span>
+              <input className="input font-mono" placeholder="team_… (optional)" value={form.team_id} onChange={(e) => setForm({ ...form, team_id: e.target.value })} />
+            </label>
+            <button type="submit" className="btn btn-primary" disabled={pending}>Connect Vercel</button>
+          </div>
+        </form>
+      )}
+      {error && <p className="mt-2 text-sm text-crit" role="alert">{error}</p>}
     </section>
   );
 }
