@@ -4,3 +4,4 @@ pymongo>=4.10
 python-dotenv>=1.0
 requests>=2.31
 mongomock>=4.3
+certifi>=2024.2
