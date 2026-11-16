@@ -166,7 +166,7 @@ export type Monitoring = {
 export type AgentActivity = {
   incident_id: string;
   service_name: string;
-  state: "unavailable" | "waiting" | "working" | "awaiting_review" | "needs_attention" | "finished";
+  state: "unavailable" | "waiting" | "working" | "awaiting_review" | "reported" | "needs_attention" | "finished";
   stage: string | null;
   started_at: string | null;
   updated_at: string | null;
@@ -224,6 +224,14 @@ export type Summary = {
   recent_incidents: Incident[];
   monitoring: Monitoring;
   agent_activity: AgentActivity[];
+  repositories: RepoOverview[];
+};
+
+export type AgentMode = "report_only" | "draft_pr";
+export type RepoOverview = {
+  service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null;
+  betterstack_monitor_id: string | null; agent: { enabled: boolean; mode: AgentMode; app: string | null };
+  health: Status; open_incident_id: string | null;
 };
 
 export type Probe = {

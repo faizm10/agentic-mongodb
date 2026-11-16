@@ -15,7 +15,7 @@ const STAGES: Record<string, string> = {
   memory_saved: "Saved what it learned",
 };
 
-const STATES: Record<AgentActivity["state"], { label: string; color: string; message: string }> = {
+export const STATES: Record<AgentActivity["state"], { label: string; color: string; message: string }> = {
   unavailable: {
     label: "Not connected",
     color: "bg-warn",
@@ -35,6 +35,11 @@ const STATES: Record<AgentActivity["state"], { label: string; color: string; mes
     label: "Awaiting PR review",
     color: "bg-accent",
     message: "A verified patch is waiting for review and merge on GitHub.",
+  },
+  reported: {
+    label: "Recommendation ready",
+    color: "bg-accent",
+    message: "Report-only: the agent investigated and recorded a recommendation. No PR was opened.",
   },
   needs_attention: {
     label: "Needs an engineer",

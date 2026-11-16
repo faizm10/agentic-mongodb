@@ -49,7 +49,8 @@ export function phase(i: Incident): Phase {
 
 /** "Checkout operational · 1 interrupted checkout to recover" */
 export function healthAndProgress(i: Incident): { health: string; progress: string } {
-  const health = `${functionalLabel(i.service_id)} ${STATUS_META[i.service_health].label.toLowerCase()}`;
+  const source = i.evidence.source === "betterstack" ? "Better Stack monitor" : functionalLabel(i.service_id);
+  const health = `${source} ${STATUS_META[i.service_health].label.toLowerCase()}`;
   const left = unsettled(i);
   const progress = i.state === "resolved" ? "Incident resolved"
     : i.recovery_phase === "recovering" ? (i.recovery ? `${left} interrupted checkout${left === 1 ? "" : "s"} to recover` : "Interrupted checkouts not collected yet")

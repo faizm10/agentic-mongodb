@@ -3,10 +3,12 @@
 import { useEffect, useState } from "react";
 import { GitBranch, Trash2 } from "lucide-react";
 import { ErrorPanel, PageHeader, Shell, Skeleton } from "@/components/ui";
-import { send, usePoll } from "@/lib/api";
+import { type AgentMode, send, usePoll } from "@/lib/api";
 
 type Connection = { connected: boolean; login?: string; connected_at?: string };
-type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null };
+type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null;
+  agent: { enabled: boolean; mode: AgentMode; app: string | null } };
+type AgentConfig = { worker_repo: string | null; apps: string[] };
 type BetterStack = { configured: boolean; webhook_path?: string; secret_header?: string; secret?: string;
   last_delivery?: { at: string; result: string; reason?: string; incident_id?: string } | null };
 type Repo = { full_name: string; default_branch: string; private: boolean };
@@ -15,6 +17,7 @@ type Options = { branches: string[]; workflows: { file: string; name: string }[]
 export default function Repositories() {
   const github = usePoll<Connection>("/api/v1/github", 60_000);
   const mapped = usePoll<Mapping[]>("/api/v1/repositories", 60_000);
+  const agentConfig = usePoll<AgentConfig>("/api/v1/agent/config", 300_000);
   const [error, setError] = useState("");
   const remove = async (m: Mapping) => {
     try {
@@ -50,6 +53,7 @@ export default function Repositories() {
                       <a href={m.deployed_url} className="truncate text-xs text-accent hover:underline" target="_blank" rel="noreferrer">{m.deployed_url}</a>
                       <span className="text-xs text-faint">{m.workflow ? `Check: ${m.workflow}` : "No workflow check"}</span>
                       <MonitorField mapping={m} onSaved={mapped.reload} />
+                      {agentConfig.data && <AgentControl mapping={m} config={agentConfig.data} onSaved={mapped.reload} />}
                       <button type="button" className="btn ml-auto px-2" aria-label={`Remove ${m.service_name}`} onClick={() => remove(m)}>
                         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
@@ -260,5 +264,50 @@ function MonitorField({ mapping, onSaved }: { mapping: Mapping; onSaved: () => v
       {dirty && <button type="submit" className="btn px-2">Save</button>}
       {error && <span className="text-crit" role="alert">{error}</span>}
     </form>
+  );
+}
+
+/** The repair agent is off until switched on, and then only reports (no PR) unless draft PRs are chosen. */
+function AgentControl({ mapping, config, onSaved }: { mapping: Mapping; config: AgentConfig; onSaved: () => void }) {
+  const [mode, setMode] = useState<AgentMode>(mapping.agent.mode);
+  const [app, setApp] = useState(mapping.agent.app ?? config.apps[0] ?? "");
+  const [error, setError] = useState("");
+  const save = async (enabled: boolean, next: { mode?: AgentMode; app?: string } = {}) => {
+    try {
+      await send("PUT", `/api/v1/repositories/${encodeURIComponent(mapping.service_id)}/agent`, { enabled, mode: next.mode ?? mode, app: next.app ?? app });
+      setError("");
+      onSaved();
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  const on = mapping.agent.enabled;
+  return (
+    <div className="flex w-full flex-wrap items-center gap-2 text-xs">
+      <button
+        type="button" role="switch" aria-checked={on} onClick={() => save(!on)}
+        className={`relative h-5 w-9 flex-none rounded-full border transition ${on ? "border-accent bg-accent" : "border-line-strong bg-raised"}`}
+      >
+        <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
+        <span className="sr-only">Repair agent for {mapping.service_name}</span>
+      </button>
+      <span className="text-muted">Repair agent {on ? "on" : "off"}</span>
+      <label className="flex items-center gap-1.5">
+        <span className="text-faint">Mode</span>
+        <select className="input w-auto py-1 text-xs" value={mode}
+          onChange={(e) => { const m = e.target.value as AgentMode; setMode(m); if (on) save(true, { mode: m }); }}>
+          <option value="report_only">Report only</option>
+          <option value="draft_pr">Open draft PRs</option>
+        </select>
+      </label>
+      <label className="flex items-center gap-1.5">
+        <span className="text-faint">Code area</span>
+        <select className="input w-auto py-1 text-xs" value={app}
+          onChange={(e) => { setApp(e.target.value); if (on) save(true, { app: e.target.value }); }}>
+          {config.apps.map((a) => <option key={a} value={a}>{a}</option>)}
+        </select>
+      </label>
+      {error && <span className="basis-full text-crit" role="alert">{error}</span>}
+    </div>
   );
 }

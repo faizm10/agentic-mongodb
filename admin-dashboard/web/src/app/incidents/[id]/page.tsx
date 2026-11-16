@@ -187,6 +187,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         const lastTestLine = ver?.test_output?.trim().split("\n").pop();
         // A stopped investigation records tests_passed=false with no patch: nothing was tested.
         const noPatch = !(invDetails.changed_files as string[] | undefined)?.length;
+        const alert = i.evidence.source === "betterstack" ? i.evidence as { cause?: string; url?: string; response_url?: string; screenshot_url?: string } : null;
 
         return (
           <div className="mt-4 space-y-8">
@@ -202,7 +203,8 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
             <dl className="panel grid divide-y divide-line sm:grid-cols-2 sm:divide-y-0 lg:grid-cols-4 lg:divide-x [&>*:nth-child(n+3)]:sm:border-t [&>*:nth-child(n+3)]:sm:border-line [&>*:nth-child(n+3)]:lg:border-t-0">
               <Field label="Affected service">{i.service_name}</Field>
               <Field label="Failed workflow">
-                {demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
+                {alert ? `Better Stack monitor · ${alert.cause ?? "alert"}`
+                  : demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
                 {!demo && failedChecks.length > 0 && <span className="block truncate font-mono text-xs text-muted" title={failedChecks.join(", ")}>{failedChecks.join(", ")}</span>}
               </Field>
               <Field label="Current phase"><Badge tone={p.tone}>{p.label}</Badge></Field>
@@ -234,7 +236,15 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                 <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
                   <div className="px-4 py-4 sm:px-5">
                     <h3 className="text-xs font-semibold text-muted">Failed check</h3>
-                    {handoff.data?.probe_failures.length ? (
+                    {alert ? (
+                      <div className="mt-2 space-y-1 text-sm">
+                        <p className="font-medium text-ink">Better Stack: {alert.cause ?? "alert"}</p>
+                        {alert.url && <p className="break-all text-xs text-muted">Monitored URL: {alert.url}</p>}
+                        {[["Response", alert.response_url], ["Screenshot", alert.screenshot_url]].map(([label, url]) => url?.startsWith("https://") && (
+                          <a key={label} href={url} target="_blank" rel="noreferrer" className="mr-3 text-xs text-accent hover:underline">{label}</a>
+                        ))}
+                      </div>
+                    ) : handoff.data?.probe_failures.length ? (
                       <ul className="mt-2 space-y-3">
                         {handoff.data.probe_failures.map((f) => {
                           const plain = plainFailure(f);
