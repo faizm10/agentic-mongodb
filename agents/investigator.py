@@ -50,6 +50,10 @@ Rules:
   application code that the recent diff or source supports; "infrastructure"
   for queues, workers, hosts or dependencies; "configuration" for settings or
   environment; otherwise "unknown".
+- A slow or failing dependency does not rule out a code bug. Check whether the
+  recent diff changed how the app handles that dependency's errors or timeouts.
+  If it did, and the change explains what the probe saw, classify it as
+  "code_bug" and name the changed handling; mention the dependency as context.
 - next_diagnostic: the single most useful check a human or agent should run
   next to confirm or narrow the cause (a command, a log query, a test to write).
 - Use the parsed traceback frames to locate the failing code. Source files are
