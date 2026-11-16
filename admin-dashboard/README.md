@@ -131,13 +131,13 @@ See `.env.example`, which contains non-secret examples only. `admin-dashboard/.e
 | `OPSRELAY_STORAGE` | `auto` | `auto`: MongoDB if `MONGODB_URI` is set, else local dev SQLite. `mongodb`: required, never falls back. `sqlite`: force local. |
 | `MONGODB_URI` / `MONGODB_DB` | — / `opsrelay` | Same variables as `agents/mongodb.py` |
 | `OPSRELAY_SQLITE_PATH` | `backend/data/uptime-dev.db` | Local development history file |
-| `OPSRELAY_MONITOR_INTERVAL` | `30` | Seconds between cycles (tests inject their own) |
+| `OPSRELAY_MONITOR_INTERVAL` | `300` | Seconds between cycles (tests inject their own) |
 | `OPSRELAY_CHECK_RETENTION_DAYS` | `35` | Raw check retention (covers the 30-day window) |
 | `OPSRELAY_LEASE_TTL` | `2 × interval + 10` | How long a crashed worker blocks a successor |
-| `OPSRELAY_<ID>_FRONTEND_URL` / `_BACKEND_URL` | `services.toml` | Per-service URL overrides (`NOVAMART`, `NOVACONNECT`) |
 | `OPSRELAY_API_HOST` / `OPSRELAY_API_PORT` | `127.0.0.1` / `8300` | API bind address |
-| `OPSRELAY_DEMO_REPO_ROOT` | Repository root inferred from this code | Override only if the uptime API and demo apps use a different checkout location |
-| `OPSRELAY_UPTIME_API_URL` | `http://127.0.0.1:8300` | Dashboard's server-side proxy target |
+| `OPSRELAY_UPTIME_API_URL` | `http://127.0.0.1:8300` | Dashboard's server-side proxy target (local dev) |
+| `OPSRELAY_CRON_SECRET` | — | Bearer token for `POST /api/v1/cron/check` (the GitHub Actions schedule) |
+| `OPSRELAY_BLOCK_PRIVATE_URLS` | off | `1` refuses sites and check requests (redirects included) that resolve to loopback, private or other non-public addresses. On for the Vercel deployment |
 
 ---
 
@@ -312,6 +312,9 @@ once when it is added, then every 5 minutes by the `uptime-checks` GitHub Action
 `POST /api/v1/cron/check` with the `OPSRELAY_CRON_SECRET` repository secret (the same value is set on the API).
 Locally, `python -m uptime serve` checks on its own schedule instead. Entries under `[[services]]` in
 `services.toml` still work for a self-hosted setup; they belong to the `demo` workspace.
+
+Sign-in, sign-up, adding sites, **Check now** and the assistant are rate-limited per instance (HTTP 429 with
+`Retry-After`). That slows password guessing and runaway model costs; it is not a shared quota across serverless instances.
 
 The **Agent dependencies** section checks GitHub, MongoDB Atlas, and OpenAI every 30 seconds and shows connection or access failures with a next step. GitHub reachability is checked even without an agent token; repository access is checked when `GITHUB_TOKEN` and `GITHUB_OWNER` are configured. MongoDB uses a read-only `ping` when `MONGODB_URI` is present. OpenAI checks API access when `OPENAI_API_KEY` is present; it does not run a model or incur generation costs. Missing settings appear as **Not configured**. The `/api/v1/dependencies` response never includes credentials, connection strings, or provider response bodies.
 
