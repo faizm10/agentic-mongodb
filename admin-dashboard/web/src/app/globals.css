@@ -8,7 +8,7 @@
 
 @layer base {
   body {
-    @apply bg-page font-sans text-ink antialiased;
+    @apply bg-page font-sans text-[14px] text-ink antialiased;
   }
   ::selection {
     background: rgba(57, 135, 229, 0.35);
@@ -21,18 +21,18 @@
 }
 
 @layer components {
-  /* One radius scale: panels rounded-xl, controls rounded-lg, badges rounded-full. */
+  /* One radius scale: panels rounded-lg, controls rounded-md, badges rounded-full. Thin 1px dividers. */
   .panel {
-    @apply rounded-xl border border-line bg-surface;
+    @apply rounded-lg border border-line bg-surface;
   }
   .card {
-    @apply rounded-lg border border-line bg-raised/40;
+    @apply rounded-md border border-line bg-raised/40;
   }
   .label {
     @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-faint;
   }
   .btn {
-    @apply inline-flex min-h-9 items-center gap-1.5 rounded-lg border border-line-strong bg-raised px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-hover disabled:cursor-wait disabled:opacity-50;
+    @apply inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-hover disabled:cursor-wait disabled:opacity-50;
   }
   .btn-primary {
     @apply border-accent bg-accent text-white hover:bg-accent/90;
@@ -44,7 +44,7 @@
     @apply border-ok/40 bg-ok/10 hover:bg-ok/20;
   }
   .badge {
-    @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-0.5 text-[11.5px] font-medium;
+    @apply inline-flex items-center gap-1.5 whitespace-nowrap rounded-full border px-2 py-px text-[11.5px] font-medium;
   }
   .tone-ok { @apply border-ok/30 bg-ok/10 text-ok; }
   .tone-warn { @apply border-warn/30 bg-warn/10 text-warn; }
