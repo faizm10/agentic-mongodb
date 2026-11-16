@@ -20,6 +20,14 @@ Instructions for coding agents (Claude Code, Codex). Keep changes small and the 
 - Don't re-read files you just wrote. Don't paste large outputs; use `tail`, `grep` or `-q`.
 - Keep reports brief: what changed, what was run and its result, anything left to do.
 
+## Commits and pull requests
+- Commit subject: `<area>: <what changed>`, imperative, under ~72 chars. Areas: `uptime`, `dashboard`, `agents`,
+  `shopping`, `messaging`, `ci`, `docs`, `repo`. Example: `uptime: sync Dependabot alerts into incidents`.
+- One logical change per commit; the body (optional) says why, not what.
+- PR title is plain words (`Dependabot alerts become dashboard incidents`); the body says what changed and how it was verified.
+- Squash-merge into `main` with the PR number first: `#<number>: <PR title>`, e.g.
+  `gh pr merge 70 --squash --subject "#70: Dependabot alerts become dashboard incidents"`.
+
 ## Layout
 - `shopping/` NovaMart (FastAPI :8100, Next.js :3100) · `message-platform/` NovaConnect (:8200, :3200)
 - `admin-dashboard/` OpsRelay uptime API (:8300) and dashboard (:3300) · `agents/` repair agent, recovery worker
