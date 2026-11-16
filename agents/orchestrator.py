@@ -46,6 +46,7 @@ import json
 import os
 import re
 import socket
+import sys
 import logging
 import time
 import uuid
@@ -809,8 +810,16 @@ def main() -> None:
     a = p.parse_args()
 
     if a.cmd == "setup":
-        m.ensure_setup()
-        rl_policy.ensure_setup()
+        from pymongo.errors import ConfigurationError, ServerSelectionTimeoutError
+        try:
+            m.ensure_setup()
+            rl_policy.ensure_setup()
+        except ServerSelectionTimeoutError:
+            # DNS resolved but no member answered: almost always the Atlas IP Access List.
+            sys.exit("MongoDB setup skipped: the cluster did not answer on port 27017. Add this machine's public IP "
+                     "(curl https://api.ipify.org) under Atlas > Security > Network Access, then run ./dev.sh setup again.")
+        except ConfigurationError as exc:
+            sys.exit(f"MongoDB setup skipped: MONGODB_URI is not usable ({exc}). Copy it again from Atlas > Connect.")
         print("setup complete")
     elif a.cmd == "worker":
         orch, monitor = _build_real()
