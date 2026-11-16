@@ -22,6 +22,7 @@ export function IncidentRow({ incident }: { incident: Incident }) {
           <p className="truncate text-xs text-muted">
             {incident.evidence.source === "betterstack" ? "Better Stack alert"
               : incident.evidence.source === "dependabot" ? "Dependabot security alerts"
+              : incident.evidence.source === "sentry" ? "Sentry issues"
               : <>{demo ? `Service ${open ? incident.severity : "recovered"}` : FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}
                 {" · "}{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}</>}
           </p>
