@@ -154,3 +154,14 @@ def settings() -> MonitorSettings:
 
 def dump(obj) -> str:
     return json.dumps(obj, default=str, indent=2)[:2000]
+
+
+def signed_in(app, email: str = "owner@example.com"):
+    """A TestClient signed in as `email`; the first account to sign up owns the demo workspace."""
+    from fastapi.testclient import TestClient
+
+    client = TestClient(app)
+    creds = {"email": email, "password": "correct horse"}
+    if client.post("/api/v1/auth/sign-up", json=creds).status_code == 409:
+        client.post("/api/v1/auth/sign-in", json=creds).raise_for_status()
+    return client

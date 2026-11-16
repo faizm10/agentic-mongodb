@@ -4,12 +4,11 @@ import asyncio
 import json
 from datetime import timedelta
 
-from fastapi.testclient import TestClient
 
 from uptime.api import create_app
 from uptime.worker import UptimeMonitor
 
-from .conftest import SERVICES, make_mongo
+from .conftest import SERVICES, make_mongo, signed_in
 
 
 def test_walkthrough_merges_recorded_steps_without_private_fields(settings, clock, apps):
@@ -41,7 +40,7 @@ def test_walkthrough_merges_recorded_steps_without_private_fields(settings, cloc
     ])
     clock.advance(120)
 
-    body = TestClient(create_app(storage, settings, clock=clock)).get(f"/api/v1/incidents/{uid}/walkthrough").json()
+    body = signed_in(create_app(storage, settings, clock=clock)).get(f"/api/v1/incidents/{uid}/walkthrough").json()
     steps = {s["key"]: s for s in body["data"]["steps"]}
 
     assert [s["key"] for s in body["data"]["steps"]] == [

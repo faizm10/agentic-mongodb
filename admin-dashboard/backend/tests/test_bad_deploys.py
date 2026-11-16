@@ -5,7 +5,6 @@ import subprocess
 from pathlib import Path
 
 import pytest
-from fastapi.testclient import TestClient
 
 from uptime.api import create_app
 
@@ -55,9 +54,9 @@ def checkout(tmp_path, monkeypatch):
 
 @pytest.fixture
 def client(tmp_path, settings, clock):
-    from .conftest import make_sqlite
+    from .conftest import make_sqlite, signed_in
 
-    return TestClient(create_app(make_sqlite(tmp_path), settings, clock=clock, demo_controls=True))
+    return signed_in(create_app(make_sqlite(tmp_path), settings, clock=clock, demo_controls=True))
 
 
 def test_ship_pushes_the_bug_and_restore_reverts_it(checkout, client):

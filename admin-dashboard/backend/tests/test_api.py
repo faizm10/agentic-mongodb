@@ -4,12 +4,13 @@ import asyncio
 from datetime import timedelta
 
 import pytest
+
 from fastapi.testclient import TestClient
 
 from uptime.api import create_app
 from uptime.worker import UptimeMonitor
 
-from .conftest import SERVICES, make_mongo, make_sqlite
+from .conftest import SERVICES, make_mongo, make_sqlite, signed_in
 
 
 @pytest.fixture(params=["sqlite", "mongodb"])
@@ -25,8 +26,8 @@ def env(request, tmp_path, settings, clock, apps):
             clock.advance(30)
             storage.acquire_lease("test-worker", clock(), 70)
 
-    def client():
-        return TestClient(create_app(storage, settings, clock=clock))
+    def client(email="owner@example.com"):
+        return signed_in(create_app(storage, settings, clock=clock), email)
 
     return {"storage": storage, "tick": tick, "client": client, "apps": apps, "clock": clock}
 
@@ -223,3 +224,38 @@ def test_learning_summary_is_aggregate_only(env):
     assert data["training"]["accuracy_after"] == 0.83 and data["training"]["curve"][0]["first_try_rate"] == 0.24
     assert data["decisions"][0]["action"] == "fix_discount_divisor" and data["decisions"][0]["pr_url"] is None
     assert "private log line" not in r.text and "\"embedding\":" not in r.text
+
+
+def test_accounts_only_see_their_own_workspaces(env):
+    env["apps"].mode["novamart"] = "functional_bug"
+    env["tick"](2)
+    owner = env["client"]()  # first sign-up: owns the demo workspace and its services
+    incident_id = owner.get("/api/v1/incidents").json()["data"][0]["id"]
+    other = env["client"]("other@example.com")
+
+    assert other.get("/api/v1/auth/me").json()["data"]["workspaces"] == []
+    assert other.get("/api/v1/summary").json()["error"]["message"] == "Create a workspace first."
+    own_ws = other.post("/api/v1/workspaces", json={"name": "Other team"}).json()["data"]["id"]
+    data = other.get("/api/v1/summary").json()["data"]
+    assert data["services"] == [] and data["active_incidents"] == []
+    assert other.get("/api/v1/incidents").json()["data"] == []
+
+    # Guessing the other account's workspace or incident ids finds nothing.
+    for path in ("/api/v1/summary", "/api/v1/services", "/api/v1/incidents"):
+        assert other.get(path, headers={"x-opsrelay-workspace": "demo"}).status_code == 404
+    other.cookies.set("opsrelay_workspace", "demo")
+    assert other.get("/api/v1/summary").status_code == 404
+    other.cookies.set("opsrelay_workspace", own_ws)
+    for path in (f"/api/v1/incidents/{incident_id}", f"/api/v1/incidents/{incident_id}/evidence",
+                 f"/api/v1/incidents/{incident_id}/walkthrough", "/api/v1/services/novamart",
+                 "/api/v1/services/novamart/checks"):
+        assert other.get(path).status_code == 404, path
+    assert other.post(f"/api/v1/incidents/{incident_id}/acknowledge", json={"by": "x"}).status_code == 404
+    assert other.patch("/api/v1/services/novamart", json={"enabled": False}).status_code == 404
+    assert owner.get("/api/v1/summary", headers={"x-opsrelay-workspace": own_ws}).status_code == 404
+    assert owner.get(f"/api/v1/incidents/{incident_id}").status_code == 200
+
+    assert TestClient(owner.app).get("/api/v1/summary").status_code == 401
+    assert other.post("/api/v1/auth/sign-in", json={"email": "other@example.com", "password": "wrong pass"}).status_code == 401
+    other.post("/api/v1/auth/sign-out")
+    assert other.get("/api/v1/auth/me").status_code == 401

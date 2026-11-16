@@ -4,13 +4,12 @@ import asyncio
 from datetime import datetime, timezone
 
 import httpx
-from fastapi.testclient import TestClient
 from pymongo.errors import ServerSelectionTimeoutError
 
 from uptime.api import create_app
 from uptime.dependencies import DependencyCheck, check_dependencies
 
-from .conftest import make_sqlite
+from .conftest import make_sqlite, signed_in
 
 
 NOW = datetime(2026, 11, 14, 12, 0, tzinfo=timezone.utc)
@@ -89,7 +88,7 @@ def test_dependency_endpoint_reuses_recent_checks(tmp_path, settings, clock, mon
                                 summary="Repository access verified.", checked_at=NOW)]
 
     monkeypatch.setattr("uptime.api.check_dependencies", fake_checks)
-    client = TestClient(create_app(make_sqlite(tmp_path), settings, clock=clock))
+    client = signed_in(create_app(make_sqlite(tmp_path), settings, clock=clock))
     first = client.get("/api/v1/dependencies")
     second = client.get("/api/v1/dependencies")
     assert first.status_code == second.status_code == 200
