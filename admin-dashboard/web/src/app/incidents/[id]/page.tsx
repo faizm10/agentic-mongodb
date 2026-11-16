@@ -85,6 +85,7 @@ function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[]
   return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 }
 
+type FailedDeploy = { id: string; sha: string | null; deployed_at: string | null; inspector_url: string | null };
 type SentryIssue = { id: string; short_id: string | null; title: string; culprit: string | null; level: string; url: string | null };
 type DependabotAlert = { number: number; package: string; severity: string; summary: string; manifest: string | null;
   patched_version: string | null; url: string | null };
@@ -162,6 +163,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         const alert = i.evidence.source === "betterstack" ? i.evidence as { cause?: string; url?: string; response_url?: string; screenshot_url?: string } : null;
         const deps = i.evidence.source === "dependabot" ? (i.evidence.alerts as DependabotAlert[]) : null;
         const issues = i.evidence.source === "sentry" ? (i.evidence.issues as SentryIssue[]) : null;
+        const deploys = i.evidence.source === "vercel" ? (i.evidence.deployments as FailedDeploy[]) : null;
 
         return (
           <div className="mt-4 space-y-8">
@@ -180,6 +182,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                 {alert ? `Better Stack monitor · ${alert.cause ?? "alert"}`
                   : deps ? `Dependabot · ${deps.length} open alert${deps.length === 1 ? "" : "s"}`
                   : issues ? `Sentry · ${issues.length} unresolved issue${issues.length === 1 ? "" : "s"}`
+                  : deploys ? "Vercel · production deploy failed"
                   : demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
                 {!demo && failedChecks.length > 0 && <span className="block truncate font-mono text-xs text-muted" title={failedChecks.join(", ")}>{failedChecks.join(", ")}</span>}
               </Field>
@@ -244,6 +247,18 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                             </p>
                             <p className="text-muted">{x.title}</p>
                             {x.culprit && <p className="font-mono text-xs text-faint">{x.culprit}</p>}
+                          </li>
+                        ))}
+                      </ul>
+                    ) : deploys ? (
+                      <ul className="mt-2 space-y-2 text-sm">
+                        {deploys.map((d) => (
+                          <li key={d.id}>
+                            <p className="font-medium text-ink">Deploy {d.sha ? <span className="font-mono">{d.sha.slice(0, 7)}</span> : d.id} failed to build</p>
+                            <p className="text-xs text-muted">
+                              {d.deployed_at ? new Date(d.deployed_at).toLocaleString() : ""}
+                              {d.inspector_url?.startsWith("https://") && <> · <a href={d.inspector_url} target="_blank" rel="noreferrer" className="text-accent hover:underline">Build logs</a></>}
+                            </p>
                           </li>
                         ))}
                       </ul>

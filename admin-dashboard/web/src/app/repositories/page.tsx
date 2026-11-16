@@ -9,6 +9,7 @@ import { type AgentMode, send, usePoll } from "@/lib/api";
 type Connection = { connected: boolean; login?: string };
 type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null;
   dependabot?: { checked_at: string; result: string; reason?: string; open_alerts?: number } | null; sentry_project: string | null;
+  vercel_project: string | null; vercel?: { result: string; reason?: string; state?: string | null; sha?: string | null } | null;
   agent: { enabled: boolean; mode: AgentMode; app: string | null } };
 type AgentConfig = { worker_repo: string | null; apps: string[] };
 type Repo = { full_name: string; default_branch: string; private: boolean };
@@ -64,6 +65,14 @@ export default function Repositories() {
                         pattern="[0-9]*" placeholder="ID" onSaved={mapped.reload} />
                       <MappingField mapping={m} label="Sentry project" saved={m.sentry_project} path="sentry" field="project"
                         pattern="[A-Za-z0-9_\-]*" placeholder="slug" onSaved={mapped.reload} />
+                      <MappingField mapping={m} label="Vercel project" saved={m.vercel_project} path="vercel" field="project"
+                        pattern="[A-Za-z0-9._\-]*" placeholder="name" onSaved={mapped.reload} />
+                      {m.vercel_project && (
+                        <span className={`text-xs ${m.vercel?.state === "ERROR" || m.vercel?.result === "skipped" ? "text-warn" : "text-faint"}`} title={m.vercel?.reason}>
+                          {!m.vercel ? "Vercel: not checked yet" : m.vercel.result === "skipped" ? `Vercel: ${m.vercel.reason}`
+                            : `Vercel: ${m.vercel.state ?? "no deploys"}${m.vercel.sha ? ` · ${m.vercel.sha.slice(0, 7)}` : ""}`}
+                        </span>
+                      )}
                       {agentConfig.data && <AgentControl mapping={m} config={agentConfig.data} onSaved={mapped.reload} />}
                       <button type="button" className="btn ml-auto px-2" aria-label={`Remove ${m.service_name}`} onClick={() => remove(m)}>
                         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
