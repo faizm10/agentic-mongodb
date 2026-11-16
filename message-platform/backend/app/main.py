@@ -9,6 +9,7 @@ WebSocket connects to ``/ws/<user id>``. There is no real authentication.
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
@@ -18,7 +19,7 @@ from collections.abc import Callable
 from datetime import datetime, timezone
 from typing import Any
 
-from fastapi import FastAPI, Header, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi import Depends, FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
@@ -41,6 +42,14 @@ from .schemas import (
     UserOut,
 )
 from .seed import seed_if_empty
+
+
+def require_service_token(authorization: str | None = Header(default=None)) -> None:
+    """Service-to-service routes need ``Bearer $OPSRELAY_SERVICE_TOKEN`` when the token is set."""
+    token = os.getenv("OPSRELAY_SERVICE_TOKEN")
+    if token and not hmac.compare_digest(authorization or "", f"Bearer {token}"):
+        raise HTTPException(status_code=401, detail="service token required")
+
 
 SERVICE_ID = "messaging"
 SERVICE_NAME = "novaconnect-api"
@@ -155,6 +164,11 @@ def create_app(
             "websocket_connections": manager.connection_count(),
         }
 
+    @app.get("/api/version", tags=["health"])
+    def version() -> dict[str, Any]:
+        # The deploy sets OPSRELAY_DEPLOYED_SHA; the agent checks it contains a merged fix.
+        return {"version": __version__, "commit_sha": os.getenv("OPSRELAY_DEPLOYED_SHA")}
+
     @app.api_route("/api/monitor/probe", methods=["GET", "POST"], tags=["monitoring"])
     def probe() -> JSONResponse:
         """Functional correctness probe. 200 when healthy, 503 when any business rule fails."""
@@ -176,7 +190,7 @@ def create_app(
     # ---------------------------------------------------------- confirmations
     confirmation_sends = {"count": 0}  # drives the alternating "mixed" demo fault
 
-    @app.post("/api/confirmations", tags=["confirmations"])
+    @app.post("/api/confirmations", tags=["confirmations"], dependencies=[Depends(require_service_token)])
     async def create_confirmation(body: ConfirmationIn, request: Request):
         fault = demo_outage.confirmation_fault(path)
         behaviour = None
@@ -205,14 +219,14 @@ def create_app(
         return JSONResponse(status_code=201 if created else 200, content=confirmation,
                             headers={"Idempotent-Replay": "false" if created else "true"})
 
-    @app.get("/api/confirmations/{confirmation_id}", tags=["confirmations"])
+    @app.get("/api/confirmations/{confirmation_id}", tags=["confirmations"], dependencies=[Depends(require_service_token)])
     async def get_confirmation(confirmation_id: str):
         fault = demo_outage.confirmation_fault(path)
         if fault is not None and fault[0] == "lookup_timeout":
             await asyncio.sleep(fault[1])
         return confirmations.get_confirmation(conn, confirmation_id)
 
-    @app.get("/api/confirmations", tags=["confirmations"])
+    @app.get("/api/confirmations", tags=["confirmations"], dependencies=[Depends(require_service_token)])
     def list_confirmations(order_id: str = Query(min_length=1, max_length=64)) -> dict[str, Any]:
         found = confirmations.list_for_order(conn, order_id)
         return {"order_id": order_id, "count": len(found), "confirmations": found}
