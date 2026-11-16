@@ -6,7 +6,9 @@ import { ErrorPanel, PageHeader, Shell, Skeleton } from "@/components/ui";
 import { send, usePoll } from "@/lib/api";
 
 type Connection = { connected: boolean; login?: string; connected_at?: string };
-type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null };
+type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null };
+type BetterStack = { configured: boolean; webhook_path?: string; secret_header?: string; secret?: string;
+  last_delivery?: { at: string; result: string; reason?: string; incident_id?: string } | null };
 type Repo = { full_name: string; default_branch: string; private: boolean };
 type Options = { branches: string[]; workflows: { file: string; name: string }[] };
 
@@ -32,6 +34,7 @@ export default function Repositories() {
         : (
           <div className="space-y-6">
             <GitHubPanel connection={github.data} onChange={github.reload} />
+            <BetterStackPanel />
             <section className="panel">
               <h2 className="border-b border-line px-5 py-3 text-sm font-semibold">Services</h2>
               {mapped.data.length === 0 ? (
@@ -46,6 +49,7 @@ export default function Repositories() {
                       </span>
                       <a href={m.deployed_url} className="truncate text-xs text-accent hover:underline" target="_blank" rel="noreferrer">{m.deployed_url}</a>
                       <span className="text-xs text-faint">{m.workflow ? `Check: ${m.workflow}` : "No workflow check"}</span>
+                      <MonitorField mapping={m} onSaved={mapped.reload} />
                       <button type="button" className="btn ml-auto px-2" aria-label={`Remove ${m.service_name}`} onClick={() => remove(m)}>
                         <Trash2 className="h-3.5 w-3.5" aria-hidden="true" />
                       </button>
@@ -182,6 +186,79 @@ function AddRepository({ onAdded }: { onAdded: () => void }) {
       <button type="submit" className="btn btn-primary" disabled={pending || !options}>
         Add repository
       </button>
+    </form>
+  );
+}
+
+function BetterStackPanel() {
+  const conf = usePoll<BetterStack>("/api/v1/betterstack", 60_000);
+  const [created, setCreated] = useState<BetterStack | null>(null);
+  const [error, setError] = useState("");
+  const shown = created ?? conf.data;
+  const rotate = async () => {
+    if (shown?.configured && !window.confirm("Replace the webhook URL and secret? Better Stack must be updated with the new ones.")) return;
+    try {
+      setCreated(await send<BetterStack>("POST", "/api/v1/betterstack"));
+      setError("");
+    } catch (e) {
+      setError((e as Error).message);
+    }
+  };
+  if (!shown) return null;
+  const last = shown.last_delivery;
+  return (
+    <section className="panel space-y-3 p-5">
+      <h2 className="text-sm font-semibold">Better Stack alerts</h2>
+      {!shown.configured ? (
+        <div className="flex flex-wrap items-center gap-3">
+          <p className="text-sm text-muted">Get a webhook URL for this workspace, then map each service to its Better Stack monitor below.</p>
+          <button type="button" className="btn btn-primary" onClick={rotate}>Create webhook</button>
+        </div>
+      ) : (
+        <>
+          <p className="text-sm text-muted">
+            In Better Stack, add an outgoing webhook integration with this URL and a custom header. Keep <code>relationships</code> in the
+            body template so OpsRelay can tell which monitor fired.
+          </p>
+          <dl className="grid gap-2 text-xs sm:grid-cols-[9rem_1fr]">
+            <dt className="label">Webhook URL</dt>
+            <dd className="break-all font-mono">{window.location.origin}{shown.webhook_path}</dd>
+            <dt className="label">Header</dt>
+            <dd className="break-all font-mono">{shown.secret_header}: {shown.secret ?? "(shown once when created; rotate to get a new one)"}</dd>
+            <dt className="label">Last delivery</dt>
+            <dd>{last ? `${new Date(last.at).toLocaleString()} · ${last.result}${last.reason ? ` · ${last.reason}` : ""}` : "None yet"}</dd>
+          </dl>
+          {shown.secret && <p className="text-xs text-warn">Copy the secret now. It isn&apos;t shown again.</p>}
+          <button type="button" className="btn" onClick={rotate}>Rotate secret</button>
+        </>
+      )}
+      {error && <p className="text-sm text-crit" role="alert">{error}</p>}
+    </section>
+  );
+}
+
+function MonitorField({ mapping, onSaved }: { mapping: Mapping; onSaved: () => void }) {
+  const [value, setValue] = useState(mapping.betterstack_monitor_id ?? "");
+  const [error, setError] = useState("");
+  const dirty = value !== (mapping.betterstack_monitor_id ?? "");
+  const save = async (e: React.FormEvent) => {
+    e.preventDefault();
+    try {
+      await send("PUT", `/api/v1/repositories/${encodeURIComponent(mapping.service_id)}/betterstack`, { monitor_id: value || null });
+      setError("");
+      onSaved();
+    } catch (err) {
+      setError((err as Error).message);
+    }
+  };
+  return (
+    <form onSubmit={save} className="flex items-center gap-1.5 text-xs">
+      <label className="flex items-center gap-1.5">
+        <span className="text-faint">Better Stack monitor</span>
+        <input className="input w-28 py-1 font-mono text-xs" inputMode="numeric" pattern="[0-9]*" placeholder="ID" value={value} onChange={(e) => setValue(e.target.value)} />
+      </label>
+      {dirty && <button type="submit" className="btn px-2">Save</button>}
+      {error && <span className="text-crit" role="alert">{error}</span>}
     </form>
   );
 }
