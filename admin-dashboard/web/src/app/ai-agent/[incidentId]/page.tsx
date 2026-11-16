@@ -149,7 +149,7 @@ function Detail({ step }: { step: WalkStep }) {
       )}
       {!!attempts?.length && (
         <Section title="Interrupted checkouts">
-          <ul className="space-y-3">{attempts.map((a) => <AttemptRow key={a.checkout_id} a={a} />)}</ul>
+          <ul className="-mx-5 divide-y divide-line border-y border-line sm:-mx-6">{attempts.map((a) => <AttemptRow key={a.checkout_id} a={a} />)}</ul>
         </Section>
       )}
       {!!events?.length && (
@@ -172,15 +172,15 @@ export default function AgentWalkthrough() {
   const step = data?.steps.find((s) => s.key === picked) ?? current;
 
   return (
-    <Shell meta={meta} updatedAt={updatedAt} error={Boolean(error)}>
+    <Shell meta={meta} updatedAt={updatedAt} error={error}>
       <Link href="/ai-agent" className="mb-4 inline-flex items-center gap-1.5 text-sm text-muted hover:text-ink">
-        <ArrowLeft className="h-4 w-4" /> AI agent
+        <ArrowLeft className="h-4 w-4" /> Investigations
       </Link>
-      {!data && error ? <ErrorPanel message={error.message} onRetry={reload} />
+      {!data && error ? <ErrorPanel error={error} onRetry={reload} />
         : !data ? <Skeleton className="h-64" />
         : (
           <>
-            <PageHeader title="Agent walkthrough" sub={<>{data.title} · <Link href={`/incidents/${encodeURIComponent(data.incident_id)}`} className="font-mono text-xs hover:text-ink">{data.incident_id}</Link></>}>
+            <PageHeader title="Investigation steps" sub={<>{data.title} · <Link href={`/incidents/${encodeURIComponent(data.incident_id)}`} className="font-mono text-xs hover:text-ink">{data.incident_id}</Link></>}>
               <div className="w-full sm:w-auto sm:text-right">
                 <Badge tone={HEALTH[data.health.state].tone}>{HEALTH[data.health.state].label}</Badge>
                 <p className="mt-1 max-w-sm text-xs text-muted">{data.health.reason}</p>
