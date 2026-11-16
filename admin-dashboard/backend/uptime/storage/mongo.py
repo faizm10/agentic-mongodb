@@ -28,6 +28,7 @@ CHECKS = "uptime_checks"
 STATUS = "uptime_status"
 INCIDENTS = "uptime_incidents"
 WORKER = "uptime_worker"
+ACCOUNTS = "opsrelay_"  # + users | emails | sessions | workspaces
 AGENT_INCIDENTS = "incidents"  # owned by agents/mongodb.py; read-only here
 AGENT_STEPS = "workflow_steps"  # owned by agents/mongodb.py; read-only here
 AGENT_MEMORIES = "memories"  # owned by agents/memory.py; read-only here
@@ -422,3 +423,25 @@ class MongoStorage:
 
     def supports_recovery(self) -> bool:
         return True
+
+    # --------------------------------------------------------------- accounts
+    def insert_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> bool:
+        try:
+            self.db[ACCOUNTS + kind].insert_one({**doc, "_id": doc_id})
+        except DuplicateKeyError:
+            return False
+        return True
+
+    def put_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> None:
+        self.db[ACCOUNTS + kind].replace_one({"_id": doc_id}, {**doc, "_id": doc_id}, upsert=True)
+
+    def get_doc(self, kind: str, doc_id: str) -> dict[str, Any] | None:
+        doc = self.db[ACCOUNTS + kind].find_one({"_id": doc_id})
+        return {k: v for k, v in doc.items() if k != "_id"} if doc else None
+
+    def find_docs(self, kind: str, field: str, value: str) -> list[dict[str, Any]]:
+        return [{k: v for k, v in d.items() if k != "_id"}
+                for d in self.db[ACCOUNTS + kind].find({field: value}).sort("_id", ASCENDING)]
+
+    def delete_doc(self, kind: str, doc_id: str) -> None:
+        self.db[ACCOUNTS + kind].delete_one({"_id": doc_id})
