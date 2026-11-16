@@ -200,6 +200,7 @@ class Summary(BaseModel):
     monitoring: MonitoringHealth
     agent_activity: list[AgentActivity]
     repositories: list[dict[str, Any]] = []
+    setup: dict[str, Any] = {}
 
 
 class AgentSettingsIn(BaseModel):
@@ -677,7 +678,9 @@ def create_app(
         return ok(Summary(overall=overall, window=window, services=overviews, active_incidents=active,
                           recent_incidents=recent, monitoring=monitoring(now, ws),
                           agent_activity=[agent_activity(i, now) for i in open_incidents],
-                          repositories=repository_overview(ws)))
+                          repositories=repository_overview(ws),
+                          setup={"workspace_id": ws, "github_connected": repositories.connection(storage, ws) is not None,
+                                 "betterstack_configured": storage.get_doc("betterstack", ws) is not None}))
 
     @app.get("/api/v1/learning", response_model=Envelope[Learning])
     def learning(ws: str = Depends(workspace)):
