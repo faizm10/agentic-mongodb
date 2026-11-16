@@ -616,7 +616,10 @@ def create_app(
     @app.post("/api/v1/webhooks/betterstack/{hook_id}", response_model=Envelope[dict[str, Any]])
     async def betterstack_webhook(hook_id: str, request: Request):
         """Called by Better Stack, not the dashboard: authenticated by the per-workspace secret header."""
-        payload = await request.json()
+        try:
+            payload = await request.json()
+        except ValueError:  # empty or non-JSON body: let the secret and payload checks reject it
+            payload = {}
         try:
             result = alerts.receive(storage, hook_id, request.headers.get(alerts.SECRET_HEADER),
                                     payload if isinstance(payload, dict) else {}, clock())
