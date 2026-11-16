@@ -75,7 +75,7 @@ export function AssistantChat() {
 
   return (
     <section
-      className="fixed inset-x-4 bottom-4 z-40 flex max-h-[min(640px,calc(100vh-2rem))] flex-col overflow-hidden rounded-2xl border border-line-strong bg-raised shadow-2xl sm:inset-x-auto sm:right-5 sm:w-[400px]"
+      className="fixed inset-x-4 bottom-4 z-40 flex max-h-[min(640px,calc(100vh-2rem))] flex-col overflow-hidden rounded-xl border border-line-strong bg-raised shadow-2xl sm:inset-x-auto sm:right-5 sm:w-[400px]"
       aria-label="Assistant chat"
     >
       <header className="flex items-center gap-2 border-b border-line px-4 py-3">
@@ -109,7 +109,7 @@ export function AssistantChat() {
         )}
         {messages.map((m, n) => (
           <div key={n} className={m.role === "user" ? "flex justify-end" : "flex"}>
-            <p className={`max-w-[85%] whitespace-pre-wrap rounded-2xl px-3 py-2 leading-relaxed ${m.role === "user" ? "bg-accent/15 text-ink" : "bg-surface text-ink"}`}>
+            <p className={`max-w-[85%] whitespace-pre-wrap rounded-lg px-3 py-2 leading-relaxed ${m.role === "user" ? "bg-accent/15 text-ink" : "bg-surface text-ink"}`}>
               {m.content}
             </p>
           </div>
