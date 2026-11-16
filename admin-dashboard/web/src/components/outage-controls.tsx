@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import { RotateCcw, ShoppingCart, Zap } from "lucide-react";
-import type { ServiceOverview } from "@/lib/api";
+import { networkError, responseError, type ServiceOverview } from "@/lib/api";
 import { StatusPill } from "@/components/ui";
 
 type ServiceId = "novamart" | "novaconnect";
@@ -32,14 +32,6 @@ const GROUPS: { id: ServiceId; name: string; actions: { scenario: 1 | 2 | 3 | 4;
   },
 ];
 
-async function errorMessage(response: Response): Promise<string | null> {
-  try {
-    const body = await response.json();
-    return typeof body?.error?.message === "string" ? body.error.message : null;
-  } catch {
-    return null;
-  }
-}
 
 export function OutageControls({ services, onChange }: { services: ServiceOverview[]; onChange: () => void }) {
   const [pending, setPending] = useState<ServiceId | null>(null);
@@ -54,13 +46,17 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ count: 4 }),
       });
+      if (!response.ok) {
+        setNotice((await responseError(response, "POST /api/v1/demo/checkouts")).message);
+        return;
+      }
       const body = await response.json().catch(() => null);
       const results: { tries: { status: number | null }[] }[] = body?.data ?? [];
       const failed = results.filter((r) => (r.tries.at(-1)?.status ?? 500) >= 500).length;
-      setNotice(response.ok ? `Placed ${results.length} checkouts; ${failed} reported a failure to the customer.` : "Could not place checkouts.");
+      setNotice(`Placed ${results.length} checkouts; ${failed} reported a failure to the customer.`);
       onChange();
     } catch {
-      setNotice("Could not reach the uptime API.");
+      setNotice(networkError("POST /api/v1/demo/checkouts").message);
     } finally {
       setPending(null);
     }
@@ -76,7 +72,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         body: scenario ? JSON.stringify({ scenario }) : undefined,
       });
       if (!response.ok) {
-        setNotice(scenario ? "Could not deploy the outage." : (await errorMessage(response)) ?? "Could not restore. Check the uptime API log.");
+        setNotice((await responseError(response, `${scenario ? "POST" : "DELETE"} /api/v1/demo/bad-deploys/${id}`)).message);
         return;
       }
       if (!scenario) {
@@ -91,7 +87,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
       onChange();
       window.setTimeout(onChange, 1800);
     } catch {
-      setNotice("Could not reach the uptime API.");
+      setNotice(networkError(`${scenario ? "POST" : "DELETE"} /api/v1/demo/bad-deploys/${id}`).message);
     } finally {
       setPending(null);
     }
@@ -105,7 +101,7 @@ export function OutageControls({ services, onChange }: { services: ServiceOvervi
         </span>
         <div className="min-w-0 flex-1">
           <h2 id="outage-controls-title" className="text-sm font-semibold">Demo outage controls</h2>
-          <p className="mt-0.5 text-xs text-muted">Break an app the way real outages happen: a bad deploy the AI agent can fix, or a payment provider going down. Restore it when finished.</p>
+          <p className="mt-0.5 text-xs text-muted">Break an app the way real outages happen: a bad deploy a code fix can repair, or a payment provider going down. Restore it when finished.</p>
         </div>
       </div>
       <div className="grid divide-y divide-line lg:grid-cols-2 lg:divide-x lg:divide-y-0">
