@@ -117,7 +117,9 @@ export default function Overview() {
               <div className={`hidden border-b border-line px-5 py-2 text-[11px] font-medium text-faint ${COLS}`} aria-hidden="true">
                 <span>Service</span><span>Latest check</span><span>Last checked</span><span>History · {data.window}</span>
               </div>
-              <ul>{data.services.map((s) => <ServiceRow key={s.id} s={s} window={data.window} />)}</ul>
+              {data.services.length === 0 ? (
+                <p className="px-5 py-4 text-sm text-muted">No sites yet. <Link href="/sites" className="text-accent hover:underline">Add the first site to monitor</Link>.</p>
+              ) : <ul>{data.services.map((s) => <ServiceRow key={s.id} s={s} window={data.window} />)}</ul>}
             </div>
           </section>
 

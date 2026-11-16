@@ -366,10 +366,8 @@ export async function send<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: s
 }
 
 export const POLL_MS = 10_000;
-/** The monitor checks every 30s; the status overview refreshes on the same cadence. */
+/** The status overview refreshes every 30s; sites are checked every 5 minutes (or on "Check now"). */
 export const STATUS_POLL_MS = 30_000;
-/** Bug injection, outage simulation and crash controls only exist in development builds. */
-export const DEV = process.env.NODE_ENV !== "production";
 
 /** Poll an endpoint without page reloads. Keeps the last good data while a refresh is in flight or failing. */
 export function usePoll<T>(path: string | null, intervalMs = POLL_MS) {

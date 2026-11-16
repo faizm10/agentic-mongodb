@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Database, FlaskConical, GitBranch, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
-import { type Account, type ApiError, DEV, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
+import { AlertTriangle, CheckCircle2, Database, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
+import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
 
 export function StatusIcon({ status, className = "h-4 w-4" }: { status: Status; className?: string }) {
@@ -154,8 +154,8 @@ const NAV = [
   { href: "/", label: "Status", Icon: LayoutDashboard },
   { href: "/incidents", label: "Incidents", Icon: Siren },
   { href: "/ai-agent", label: "Investigations", Icon: Search },
+  { href: "/sites", label: "Sites", Icon: Globe },
   { href: "/repositories", label: "Repositories", Icon: GitBranch },
-  ...(DEV ? [{ href: "/demo", label: "Development", Icon: FlaskConical }] : []),
 ];
 
 function NavLinks() {
