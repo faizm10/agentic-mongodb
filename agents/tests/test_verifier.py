@@ -92,7 +92,7 @@ def test_sandbox_env_drops_credentials(tmp_path, monkeypatch):
 
     assert set(env) == {
         "PATH", "HOME", "TMPDIR", "LANG", "LC_ALL", "PYTHONDONTWRITEBYTECODE",
-        "PYTHONHASHSEED", "PYTHONNOUSERSITE", "NO_COLOR",
+        "PYTHONHASHSEED", "PYTHONNOUSERSITE", "NO_COLOR", "CI", "NEXT_TELEMETRY_DISABLED",
     }
     assert env["HOME"].startswith(str(tmp_path))
 

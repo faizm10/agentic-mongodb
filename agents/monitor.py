@@ -4,7 +4,9 @@ Role in the project
 -------------------
 This is the agent's "smoke detector". Every ~20 seconds it asks GitHub for failed
 workflow runs on the main branch, keeps only the two apps we care about, and turns
-each new failure into a ``FailureEvent`` for the orchestrator.
+each new failure into a ``FailureEvent`` for the orchestrator. Failed runs on Dependabot's
+update branches count too (one per branch and commit: a Dependabot commit fails on both its
+push and its pull_request run), so the agent can fix the upgrade on its own branch.
 
 The ``seen`` set lives in memory only, so it stops us from reporting the same
 incident twice *while running*. Durable de-duplication across restarts is
@@ -31,6 +33,7 @@ from .github_client import (
 )
 from .github_types import (
     AGENT_BRANCH_PREFIX,
+    DEPENDABOT_BRANCH_PREFIX,
     FailureEvent,
     application_for_workflow_path,
     make_incident_id,
@@ -53,6 +56,7 @@ class FailureMonitor:
         self.branch = branch or self.client.config.base_branch
         self.per_page = per_page
         self._seen: set[str] = set()
+        self._heads: dict[tuple[str, str], str] = {}  # (Dependabot branch, sha) -> incident reported for it
 
     # -- filtering ---------------------------------------------------------- #
 
@@ -61,8 +65,8 @@ class FailureMonitor:
         head_branch = run.get("head_branch") or ""
         if head_branch.startswith(AGENT_BRANCH_PREFIX):
             return None                      # the agent's own fix branches
-        if head_branch != self.branch:
-            return None                      # only watch the main branch
+        if head_branch != self.branch and not head_branch.startswith(DEPENDABOT_BRANCH_PREFIX):
+            return None                      # only main and Dependabot's update branches
         if run.get("status") != "completed" or run.get("conclusion") != "failure":
             return None
         path = run.get("path") or ""
@@ -90,12 +94,18 @@ class FailureMonitor:
         """One poll. Returns only failures not reported before (oldest first)."""
         runs = self.client.list_workflow_runs(
             branch=self.branch, status="failure", per_page=self.per_page
+        ) + self.client.list_workflow_runs(
+            actor="dependabot[bot]", status="failure", per_page=self.per_page
         )
         events = []
         for run in runs:
             event = self._event_from_run(run)
-            if event and event.incident_id not in self._seen:
+            head = (event.branch, event.commit_sha) if event else None
+            if event and event.incident_id not in self._seen and event not in events and (
+                    event.branch == self.branch or head not in self._heads):
                 events.append(event)
+                if event.branch != self.branch:
+                    self._heads[head] = event.incident_id
         events.sort(key=lambda e: e.created_at or "")
         for event in events:
             self._seen.add(event.incident_id)
@@ -104,6 +114,7 @@ class FailureMonitor:
     def forget(self, incident_id: str) -> None:
         """Make an incident reportable again (e.g. the orchestrator failed to take it)."""
         self._seen.discard(incident_id)
+        self._heads = {h: i for h, i in self._heads.items() if i != incident_id}
 
     def baseline(self) -> int:
         """Mark everything that has already failed as seen; returns how many."""

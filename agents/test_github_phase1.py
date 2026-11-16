@@ -122,12 +122,14 @@ def test_detect_failures_filters_and_deduplicates():
         run(105, "shopping-ci.yml", conclusion="success"),   # not a failure
         run(106, "shopping-ci.yml", branch="feature-x"),     # not main
         run(107, "shopping-ci.yml", attempt=2),              # re-run attempt -> new incident
+        run(108, "shopping-ci.yml", branch="dependabot/npm_and_yarn/x", sha="d1"),  # Dependabot push run
+        run(109, "shopping-ci.yml", branch="dependabot/npm_and_yarn/x", sha="d1"),  # its PR run: same commit
     ]
     client = make_client({f"{REPO}/actions/runs": (200, {"workflow_runs": runs})})
     monitor = FailureMonitor(client)
 
     events = monitor.detect_failures()
-    assert [e.incident_id for e in events] == ["101-1", "102-1", "107-2"]
+    assert [e.incident_id for e in events] == ["101-1", "102-1", "107-2", "108-1"]
     assert {e.application for e in events} == {"shopping", "messaging"}
     assert events[0].to_dict()["incidentId"] == "101-1"
 

@@ -212,7 +212,7 @@ class PullRequestPublisher:
     # ------------------------------------------------------------------ #
 
     def _check_patch_applies_to_base(self, req: PublishRequest, steps: list[str]) -> None:
-        base_branch = self.client.config.base_branch
+        base_branch = req.base_branch or self.client.config.base_branch
         paths = [f.path for f in req.files]
 
         try:
@@ -339,7 +339,8 @@ class PullRequestPublisher:
                 steps.append(f"PR #{pr.number} found{note}")
                 return pr
             try:
-                pr = self.client.create_pr(branch, self._title(req), self._body(req), draft=self.draft)
+                pr = self.client.create_pr(branch, self._title(req), self._body(req), draft=self.draft,
+                                             base=req.base_branch or None)
                 steps.append(f"opened PR #{pr.number}")
                 return pr
             except GitHubUnavailable:
@@ -358,7 +359,7 @@ class PullRequestPublisher:
         self, pr: PullRequestInfo, branch: str, req: PublishRequest, steps: list[str]
     ) -> GitHubOperationResult:
         final = self.client.get_pr(pr.number)
-        base_branch = self.client.config.base_branch
+        base_branch = req.base_branch or self.client.config.base_branch
         problems = []
         if final.state != "open":
             problems.append(f"PR is {final.state}")
@@ -433,13 +434,18 @@ class PullRequestPublisher:
         new_tests = (f"- The agent added {', '.join(f'`{p}`' for p in req.new_files)}: it fails without this fix "
                      "and passes with it. Review it like any other test.\n" if req.new_files else "")
         source = f"[CI run]({req.workflow_url})" if req.workflow_url else "live monitoring"
+        checked = "The app's typecheck and build pass" if req.application.endswith("-web") else "The app's tests pass"
+        after = ("- After it is merged and deployed, OpsRelay closes the incident once a fresh check passes.\n\n"
+                 if not req.base_branch else
+                 f"- This targets Dependabot's `{req.base_branch}`. Merge it there, let that PR's CI go green, "
+                 "then merge the Dependabot PR.\n\n")
         return (
             f"## What broke\n\n{req.root_cause or 'n/a'}\n\n"
             f"## The fix\n\n{req.summary or 'n/a'}\n\n{files}\n\n"
             "## How it was checked\n\n"
-            "- The app's tests pass with this change, run in an isolated copy of the repo.\n"
+            f"- {checked} with this change, run in an isolated copy of the repo.\n"
             f"{new_tests}"
-            "- After it is merged and deployed, OpsRelay closes the incident once a fresh check passes.\n\n"
+            f"{after}"
             "**Your part:** review the diff, then mark this draft ready and merge it. "
             "The agent never merges on its own.\n\n"
             f"<sub>OpsRelay · incident `{req.incident_id}` · {req.application or 'app'} · "

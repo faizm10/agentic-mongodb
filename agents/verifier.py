@@ -12,6 +12,9 @@ Isolation model:
 - New regression tests (``added_tests``) may only be ``<root>/<test_dir>/test_opsrelay_*.py``
   files that do not exist yet; they are written into the export before anything runs.
 
+Node apps (``kind = "node"``) run ``install`` once in the export (it needs the network, so always with
+the process runner) and share that ``node_modules`` with every copy; a run is the app's ``checks`` in order.
+
 When Docker is available (``OPSRELAY_VERIFIER_RUNNER=auto`` with an image, or ``=docker``) each pytest run is a disposable container instead:
 no network, a read-only root, all capabilities dropped, an unprivileged user and CPU, memory
 and process limits (``OPSRELAY_VERIFIER_IMAGE``, ``_CPUS``, ``_MEMORY``). Without Docker the ``process``
@@ -142,6 +145,12 @@ class VerificationSession:
             # Untracked in the throwaway repo, so candidate diffs and their checks never see it.
             (self.pristine / path).write_text(content)
         self.env = _sandbox_env(self.root)
+        if self.app.kind == "node":
+            install = _run_commands(self.app, self.pristine / self.app.root, [self.app.install], self.env)
+            if not install.passed:
+                self.__exit__(None, None, None)
+                raise VerificationError(f"{' '.join(self.app.install)} failed at {self.commit_sha[:7]}: "
+                                        f"{install.output_tail[-500:]}")
         return self
 
     def __exit__(self, *exc) -> None:
@@ -152,15 +161,16 @@ class VerificationSession:
     def run_suite(self) -> TestRun:
         """Run the app's full test suite once on a copy of the original code."""
         workspace = self._fresh_copy(f"suite-{self._next_id()}")
-        return self._pytest(workspace / self.app.root, [self.app.test_dir])
+        return self._suite(workspace / self.app.root)
 
     def reproduce(self) -> Baseline:
         """Run the failing tests ``baseline_runs`` times on a copy of the original code."""
-        if not self.tests:
+        if not self.tests and self.app.kind == "python":
             raise VerificationError("no failing test ids to reproduce")
         workspace = self._fresh_copy("baseline")
         app_dir = workspace / self.app.root
-        return Baseline([self._pytest(app_dir, self.tests) for _ in range(max(1, self.app.baseline_runs))])
+        run = (lambda: self._suite(app_dir)) if self.app.kind == "node" else (lambda: self._pytest(app_dir, self.tests))
+        return Baseline([run() for _ in range(max(1, self.app.baseline_runs))])
 
     def check(self, diff: str) -> CandidateCheck:
         """Apply ``diff`` to a fresh copy and rerun the failing tests and the full suite."""
@@ -180,6 +190,13 @@ class VerificationSession:
             return CandidateCheck(False, f"applied patch changed {actual}, expected {patch.changed_files}", **fields)
 
         app_dir = workspace / self.app.root
+        if self.app.kind == "node":
+            run = self._suite(app_dir)
+            if not run.passed:
+                return CandidateCheck(False, "checks timed out after the patch" if run.timed_out
+                                      else "the app's checks still fail after the patch", reproduce_runs=[run], **fields)
+            return CandidateCheck(True, f"{self._checks_label()} now pass", reproduce_runs=[run], suite=run,
+                                  files={p: (workspace / p).read_text() for p in patch.changed_files}, **fields)
         runs: list[TestRun] = []
         for _ in range(max(1, self.app.baseline_runs)):
             runs.append(self._pytest(app_dir, self.tests))
@@ -210,7 +227,7 @@ class VerificationSession:
         applied = _git(workspace, "apply", "--whitespace=nowarn", "-", input=diff, check=False)
         if applied.returncode != 0:
             return CandidateCheck(False, f"patch does not apply at {self.commit_sha}: {applied.stderr.strip()[:500]}")
-        suite = self._pytest(workspace / self.app.root, [self.app.test_dir])
+        suite = self._suite(workspace / self.app.root)
         reason = (f"the full {self.app.name} suite passes at {self.commit_sha[:7]}" if suite.passed else
                   "app test suite timed out" if suite.timed_out else f"app test suite fails at {self.commit_sha[:7]}")
         return CandidateCheck(suite.passed, reason, suite=suite, changed_files=patch.changed_files,
@@ -222,11 +239,23 @@ class VerificationSession:
 
     def _fresh_copy(self, name: str) -> Path:
         dest = self.root / name
-        shutil.copytree(self.pristine, dest, symlinks=True)
+        if self.app.kind == "node":  # share the one install instead of copying node_modules
+            shutil.copytree(self.pristine, dest, symlinks=True, ignore=shutil.ignore_patterns("node_modules", ".next"))
+            (dest / self.app.root / "node_modules").symlink_to(self.pristine / self.app.root / "node_modules")
+        else:
+            shutil.copytree(self.pristine, dest, symlinks=True)
         return dest
 
     def _pytest(self, cwd: Path, targets: list[str]) -> TestRun:
         return _run_pytest(self.app, cwd, targets, self.env)
+
+    def _suite(self, app_dir: Path) -> TestRun:
+        if self.app.kind == "node":
+            return _run_commands(self.app, app_dir, self.app.checks, self.env)
+        return self._pytest(app_dir, [self.app.test_dir])
+
+    def _checks_label(self) -> str:
+        return " and ".join(f"`{' '.join(c)}`" for c in self.app.checks)
 
 
 def verify_patch(
@@ -326,6 +355,8 @@ def _sandbox_env(tmp: Path) -> dict[str, str]:
         "PYTHONHASHSEED": "0",
         "PYTHONNOUSERSITE": "1",
         "NO_COLOR": "1",
+        "CI": "1",
+        "NEXT_TELEMETRY_DISABLED": "1",
     }
 
 
@@ -402,6 +433,29 @@ def _run_pytest(app: AppConfig, cwd: Path, targets: list[str], env: dict[str, st
         duration_seconds=round(time.monotonic() - started, 2),
         output_tail=output[-OUTPUT_TAIL_CHARS:],
     )
+
+
+def _run_commands(app: AppConfig, cwd: Path, commands: list[list[str]], env: dict[str, str]) -> TestRun:
+    """Run ``commands`` in order with the process runner, stopping at the first failure. A failure
+    is recorded as returncode 1 (npm and tsc use other codes) so baselines treat it as reproduced."""
+    started, output = time.monotonic(), ""
+    for command in commands:
+        proc = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                                stderr=subprocess.STDOUT, text=True, start_new_session=True)
+        try:
+            out, _ = proc.communicate(timeout=app.timeout_seconds)
+        except subprocess.TimeoutExpired:
+            os.killpg(proc.pid, signal.SIGKILL)
+            out, _ = proc.communicate()
+            output += f"$ {' '.join(command)}\n{out}\n[verifier] timed out after {app.timeout_seconds}s"
+            return TestRun(command=command, returncode=None, passed=False, timed_out=True,
+                           duration_seconds=round(time.monotonic() - started, 2), output_tail=output[-OUTPUT_TAIL_CHARS:])
+        output += f"$ {' '.join(command)}\n{out}\n"
+        if proc.returncode != 0:
+            return TestRun(command=command, returncode=1, passed=False,
+                           duration_seconds=round(time.monotonic() - started, 2), output_tail=output[-OUTPUT_TAIL_CHARS:])
+    return TestRun(command=[" && ".join(" ".join(c) for c in commands)], returncode=0, passed=True,
+                   duration_seconds=round(time.monotonic() - started, 2), output_tail=output[-OUTPUT_TAIL_CHARS:])
 
 
 def _reproduced(run: TestRun) -> bool:

@@ -351,11 +351,13 @@ class GitHubClient:
         branch: Optional[str] = None,
         status: Optional[str] = None,
         per_page: int = 30,
+        actor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         """Recent workflow runs. ``status="failure"`` filters to failed runs server-side."""
         data = self._get_json(
             f"{self._repo}/actions/runs",
             branch=branch,
+            actor=actor,
             status=status,
             per_page=per_page,
             exclude_pull_requests="true",
@@ -592,11 +594,12 @@ class GitHubClient:
                 return self._pr_from(item)
         return None
 
-    def create_pr(self, branch: str, title: str, body: str, draft: bool = False) -> PullRequestInfo:
+    def create_pr(self, branch: str, title: str, body: str, draft: bool = False,
+                  base: Optional[str] = None) -> PullRequestInfo:
         """Open a PR. With ``draft=True`` it is opened as a draft; repositories that do not
         support drafts answer 422 mentioning "draft", and we then open a normal PR (the
         agent still never merges anything itself)."""
-        payload = {"title": title, "head": branch, "base": self.config.base_branch, "body": body}
+        payload = {"title": title, "head": branch, "base": base or self.config.base_branch, "body": body}
         if draft:
             try:
                 return self._pr_from(

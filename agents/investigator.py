@@ -54,6 +54,11 @@ Rules:
   recent diff changed how the app handles that dependency's errors or timeouts.
   If it did, and the change explains what the probe saw, classify it as
   "code_bug" and name the changed handling; mention the dependency as context.
+- A dependency upgrade (the recent diff changes a manifest or lockfile) that breaks a
+  typecheck or build is a "code_bug" when the app's supplied source or config can adapt
+  to it; when it needs another package or a manifest change, say so and use "needs_review".
+  Fixes may only edit existing supplied files (never create one), so prefer a change that
+  fits them, such as a compiler option in a supplied tsconfig.json.
 - next_diagnostic: the single most useful check a human or agent should run
   next to confirm or narrow the cause (a command, a log query, a test to write).
 - Use the parsed traceback frames to locate the failing code. Source files are
@@ -290,7 +295,7 @@ def _source_text(evidence: _EvidenceDraft, request: RepairRequest, reproduction:
 
 
 def _in_source_dirs(path: str, app: AppConfig) -> bool:
-    return any(path.startswith(d.rstrip("/") + "/") for d in app.source_dirs)
+    return any(path == d or path.startswith(d.rstrip("/") + "/") for d in app.source_dirs)
 
 
 def _check_diagnosis(

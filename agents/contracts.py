@@ -26,10 +26,13 @@ class AppConfig(BaseModel):
     """Per-app repair scope and fixed test commands, loaded from apps.toml."""
 
     name: str
+    kind: Literal["python", "node"] = Field("python", description="python: pytest; node: install + checks.")
     root: str = Field(description="App directory relative to the repo root.")
-    source_dirs: list[str] = Field(description="Repo-relative dirs a patch may edit.")
-    test_dir: str = Field(description="Test dir relative to the app root.")
-    pytest_args: list[str] = Field(description="Fixed args placed after `python -m pytest`.")
+    source_dirs: list[str] = Field(description="Repo-relative dirs (or single files) a patch may edit.")
+    test_dir: str = Field("", description="Test dir relative to the app root.")
+    pytest_args: list[str] = Field(default_factory=list, description="Fixed args placed after `python -m pytest`.")
+    install: list[str] = Field(default_factory=list, description="node: run once in the app root before any check.")
+    checks: list[list[str]] = Field(default_factory=list, description="node: commands that must all pass.")
     timeout_seconds: int = 120
     max_changed_lines: int = 60
     max_changed_files: int = 3

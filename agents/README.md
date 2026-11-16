@@ -296,6 +296,15 @@ Model and API errors are raised so the orchestrator can apply its own retry poli
   with the agents interpreter. `tests/test_novamart_repair.py` commits a bug from
   `shopping/inject_bug.py` and repairs it end to end against the real code.
 - **Messaging** is still a placeholder until `message-platform/` lands.
+- **Frontends** (`shopping-web`, `messaging-web`, `kind = "node"`): a CI run where only the
+  frontend job failed is routed here. The verifier runs `install` (`npm ci`) once at the failed
+  commit with the process runner, since it needs the network, then every command in `checks`
+  (`npm run typecheck`, `npm run build`) must pass. Patches may edit `src/` and `tsconfig.json`,
+  never `package.json` or the lockfile, so an upgrade that needs another package goes to review.
+- **Dependabot:** failed runs on `dependabot/*` branches are picked up too, one per branch and
+  commit. The fix PR targets the Dependabot branch: merge it there, let that PR go green, then
+  merge the Dependabot PR. The incident resolves when the fix PR merges, since nothing deploys
+  on its own. Once you push to its branch, Dependabot stops rebasing that PR.
 - **Overrides:** set `OPSRELAY_APPS_CONFIG` to use a different file. The test suite points
   it at `tests/apps.toml`, which describes the stand-in fixtures.
 
