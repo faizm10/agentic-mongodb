@@ -185,6 +185,8 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         const entries = timeline(i, walk.data, demo);
         const others = i.related_ci.filter((c) => c.id !== run?.id);
         const lastTestLine = ver?.test_output?.trim().split("\n").pop();
+        // A stopped investigation records tests_passed=false with no patch: nothing was tested.
+        const noPatch = !(invDetails.changed_files as string[] | undefined)?.length;
 
         return (
           <div className="mt-4 space-y-8">
@@ -219,7 +221,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               </Section>
               <Section title="Incident progress">
                 <dl className="divide-y divide-line">
-                  <Field label="Phase"><Badge tone={p.tone}>{p.label}</Badge><span className="mt-1 block text-muted">{hp.progress}</span></Field>
+                  <Field label="Phase"><Badge tone={p.tone}>{p.label}</Badge>{hp.progress !== p.label && <span className="mt-1 block text-muted">{hp.progress}</span>}</Field>
                   <Field label={i.state === "open" ? "Open for" : "Lasted"}>
                     <span className="tabular">{duration(elapsed)} · started {clock(i.started_at, true)}{i.resolved_at ? ` · resolved ${clock(i.resolved_at, true)}` : ""}</span>
                   </Field>
@@ -270,7 +272,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                       <dl className="mt-2 space-y-2 text-sm">
                         {rec?.action && <div><dt className="text-xs text-muted">Recommendation</dt><dd className="text-ink">{ACTION[rec.action] ?? rec.action}{rec.detail ? ` · ${rec.detail}` : ""}</dd></div>}
                         {(invDetails.root_cause as string | undefined) && <div><dt className="text-xs text-muted">Cause</dt><dd className="text-ink">{invDetails.root_cause as string}</dd></div>}
-                        <div><dt className="text-xs text-muted">Change</dt><dd className="text-ink">{inv.summary}</dd></div>
+                        <div><dt className="text-xs text-muted">{noPatch ? "Why no patch" : "Change"}</dt><dd className="text-ink">{inv.summary}</dd></div>
                         {(invDetails.changed_files as string[] | undefined)?.length ? (
                           <div><dt className="text-xs text-muted">Files</dt><dd className="font-mono text-xs text-ink">{(invDetails.changed_files as string[]).join(", ")}</dd></div>
                         ) : null}
@@ -289,6 +291,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                     <Field label="Before the patch">{failedChecks.length ? `Failing: ${failedChecks.join(", ")}` : i.summary}</Field>
                     <Field label="After the patch">
                       {ver?.tests_passed == null ? <span className="text-muted">Not verified yet</span>
+                        : noPatch && !ver.tests_passed ? <span className="text-muted">No patch was produced</span>
                         : <><StatusText status={ver.tests_passed ? "operational" : "down"} label={ver.tests_passed ? "Tests passed" : "Tests failed"} />
                           {lastTestLine && <span className="block truncate font-mono text-xs text-muted" title={lastTestLine}>{lastTestLine}</span>}</>}
                     </Field>

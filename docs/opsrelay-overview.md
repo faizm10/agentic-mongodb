@@ -13,7 +13,7 @@ Repo: `faizm10/agentic-mongodb` (branch `main`). There is a demo video in `vid/`
 | **NovaMart** (shopping demo app) | `shopping/` | Next.js 15 + TS + Tailwind, FastAPI, local JSON store | App :3100 · API :8100 |
 | **NovaConnect** (messaging demo app) | `message-platform/` | Next.js 15 + TS + Tailwind + Motion, FastAPI + WebSockets, SQLite | App :3200 · API :8200 |
 | **Uptime monitor and status dashboard** | `admin-dashboard/` | Python worker + FastAPI, Next.js dashboard, MongoDB or SQLite | Dashboard :3300 · API :8300 |
-| **AI repair agents** | `agents/` | Python 3.12, OpenAI (`gpt-4.1-mini` by default), MongoDB Atlas, Voyage AI embeddings (optional), GitHub API | CLI and worker |
+| **AI repair agents** | `agents/` | Python 3.12, OpenAI (`gpt-4.1` by default), MongoDB Atlas, Voyage AI embeddings (optional), GitHub API | CLI and worker |
 | **CI** | `.github/workflows/` | GitHub Actions: `shopping-ci.yml`, `messaging-ci.yml` | — |
 
 `./dev.sh setup && ./dev.sh` starts all six servers. If `MONGODB_URI` is set, it also starts the AI agent worker. `DEV_PORT_OFFSET` shifts the ports and `DEV_AGENT=0` skips the agent.
