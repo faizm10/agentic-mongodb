@@ -286,7 +286,7 @@ class CheckoutService:
             sent = self.confirmations.send(self.confirmation_request(order, request_id, probe=probe))
         except ConfirmationUnavailable as exc:
             attempt = self._confirmation_unavailable(checkout_id, exc, request_id)
-            raise ConfirmationUnavailableError(exc.message, details={"order_id": order["order_id"], **exc.to_dict()}) from exc
+            return CheckoutResult(order, attempt, replayed)  # the order is saved; recovery resends the confirmation
         return CheckoutResult(order, self._note_confirmation(checkout_id, sent, request_id), replayed)
 
     def confirmation_request(self, order: dict[str, Any], request_id: str | None, *,
