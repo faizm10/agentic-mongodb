@@ -416,56 +416,37 @@ class PullRequestPublisher:
         return f"[OpsRelay] {app}{what} (incident {req.incident_id})"
 
     @staticmethod
-    def _notes_block(req: PublishRequest) -> str:
-        notes = (req.context_notes or "").strip().replace("<!--", "").replace("-->", "")
-        if not notes:
-            return ""
-        if len(notes) > 3000:
-            notes = notes[:3000] + "\n[... truncated ...]"
-        return f"## Context from OpsRelay memory\n\n{notes}\n\n"
-
-    @staticmethod
-    def _investigation_block(req: PublishRequest) -> str:
-        text = (req.investigation or "").strip().replace("<!--", "").replace("-->", "")
+    def _details(summary: str, text: str, limit: int) -> str:
+        """A collapsed section, so the PR leads with the three things a reviewer needs."""
+        text = (text or "").strip().replace("<!--", "").replace("-->", "")
         if not text:
             return ""
-        if len(text) > 6000:
-            text = text[:6000] + "\n[... truncated ...]"
-        return f"## Investigation\n\n{text}\n\n"
-
-    @staticmethod
-    def _new_tests_note(req: PublishRequest) -> str:
-        if not req.new_files:
-            return ""
-        names = ", ".join(f"`{p}`" for p in req.new_files)
-        return (f"New regression test(s) {names} were written by the agent: they fail on the base "
-                "commit and pass with this fix. Review them like any other test.\n\n")
+        if len(text) > limit:
+            text = text[:limit] + "\n[... truncated ...]"
+        return f"<details>\n<summary>{summary}</summary>\n\n{text}\n\n</details>\n\n"
 
     def _body(self, req: PublishRequest) -> str:
         files = "\n".join(f"- `{f.path}`" for f in req.files)
-        run = f"[GitHub Actions run]({req.workflow_url})" if req.workflow_url else "n/a"
         tests = (req.test_summary or "").strip().replace("```", "'''")
         if len(tests) > MAX_TEST_SUMMARY_CHARS:
             tests = "[... truncated ...]\n" + tests[-MAX_TEST_SUMMARY_CHARS:]
-        test_block = f"\n```\n{tests}\n```\n" if tests else "\n"
+        new_tests = (f"- The agent added {', '.join(f'`{p}`' for p in req.new_files)}: it fails without this fix "
+                     "and passes with it. Review it like any other test.\n" if req.new_files else "")
+        source = f"[CI run]({req.workflow_url})" if req.workflow_url else "live monitoring"
         return (
-            "## Automated incident fix\n\n"
-            "> Opened by the OpsRelay incident recovery agent. **A person must review this "
-            "before it is merged. It is never merged automatically.**\n\n"
-            "| | |\n|---|---|\n"
-            f"| Incident | `{req.incident_id}` |\n"
-            f"| Application | {req.application or 'n/a'} |\n"
-            f"| Base commit | `{req.base_sha[:12]}` |\n"
-            f"| CI run | {run} |\n\n"
-            f"## Root cause\n\n{req.root_cause or 'n/a'}\n\n"
-            f"{self._investigation_block(req)}"
-            f"## Proposed fix\n\n{req.summary or 'n/a'}\n\n"
-            f"Files changed:\n{files}\n\n"
-            f"{self._new_tests_note(req)}"
-            "## Test results\n\n"
-            "Tests passed in an isolated environment before this PR was opened."
-            f"{test_block}\n"
-            f"{self._notes_block(req)}"
+            f"## What broke\n\n{req.root_cause or 'n/a'}\n\n"
+            f"## The fix\n\n{req.summary or 'n/a'}\n\n{files}\n\n"
+            "## How it was checked\n\n"
+            "- The app's tests pass with this change, run in an isolated copy of the repo.\n"
+            f"{new_tests}"
+            "- After it is merged and deployed, OpsRelay closes the incident once a fresh check passes.\n\n"
+            "**Your part:** review the diff, then mark this draft ready and merge it. "
+            "The agent never merges on its own.\n\n"
+            f"<sub>OpsRelay · incident `{req.incident_id}` · {req.application or 'app'} · "
+            f"base `{req.base_sha[:7]}` · found by {source}</sub>\n\n"
+            f"{self._details('Full investigation (evidence and reasoning)', req.investigation, 6000)}"
+            f"{self._details('Test output', f'```{chr(10)}{tests}{chr(10)}```' if tests else '', MAX_TEST_SUMMARY_CHARS + 20)}"
+            f"{self._details('Similar past incidents', req.context_notes, 3000)}"
             f"<!-- opsrelay-incident: {req.incident_id} -->\n"
         )
 
