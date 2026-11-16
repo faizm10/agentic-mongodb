@@ -225,6 +225,7 @@ export type Summary = {
   monitoring: Monitoring;
   agent_activity: AgentActivity[];
   repositories: RepoOverview[];
+  setup: { workspace_id: string; github_connected: boolean; betterstack_configured: boolean };
 };
 
 export type AgentMode = "report_only" | "draft_pr";

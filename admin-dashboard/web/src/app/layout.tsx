@@ -2,6 +2,7 @@ import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
 import { Analytics } from "@vercel/analytics/next";
 import { AssistantChat } from "@/components/assistant-chat";
+import { Mascot } from "@/components/mascot";
 import "./globals.css";
 
 const sans = Geist({ subsets: ["latin"], variable: "--font-sans", display: "swap" });
@@ -17,6 +18,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
     <html lang="en" className={`${sans.variable} ${mono.variable}`}>
       <body>
         {children}
+        <Mascot />
         <AssistantChat />
         <Analytics />
       </body>
