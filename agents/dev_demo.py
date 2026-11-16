@@ -3,7 +3,7 @@
     python -m agents.dev_demo reset                       # wipe demo incident + seed memories
     OPSRELAY_CRASH_AT=pr_created python -m agents.dev_demo run   # dies right after PR is created
     python -m agents.dev_demo run                         # fresh worker resumes, finds same PR
-    python -m agents.orchestrator status "faizm10/agentic-mongodb#9000001.1"
+    python -m agents.orchestrator status "faizm10/opsrelay-agent#9000001.1"
 
 Once Hamza's and Faiz's modules exist, use `python -m agents.orchestrator worker` instead.
 """

@@ -2,7 +2,7 @@
 
 OpsRelay is a hackathon demo of an **AI incident detection and repair system**. Two realistic demo apps run locally. An uptime monitor watches them, and GitHub Actions runs their tests. When something breaks, a Python AI agent investigates it, reproduces the failure, writes and verifies a minimal fix, and opens a **pull request that a human must review and merge**. The agent never merges anything itself. MongoDB Atlas holds the incident state, the repair memory and a reinforcement-learning fix policy.
 
-Repo: `faizm10/agentic-mongodb` (branch `main`).
+Repo: `faizm10/opsrelay-agent` (branch `main`).
 
 ---
 
