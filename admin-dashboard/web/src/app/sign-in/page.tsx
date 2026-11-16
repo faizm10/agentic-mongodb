@@ -1,19 +1,8 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { type Account, networkError, responseError, selectWorkspace } from "@/lib/api";
+import { type Account, selectWorkspace, send } from "@/lib/api";
 import { Logo } from "@/components/ui";
-
-async function post<T>(path: string, body: unknown): Promise<T> {
-  let res: Response;
-  try {
-    res = await fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
-  } catch {
-    throw networkError(`POST ${path}`);
-  }
-  if (!res.ok) throw await responseError(res, `POST ${path}`);
-  return (await res.json()).data as T;
-}
 
 /** Sign in, create an account, or (signed in without a workspace) create the first workspace. */
 export default function SignInPage() {
@@ -42,10 +31,10 @@ export default function SignInPage() {
     setError("");
     try {
       if (mode === "workspace") {
-        selectWorkspace((await post<{ id: string }>("/api/v1/workspaces", { name })).id);
+        selectWorkspace((await send<{ id: string }>("POST", "/api/v1/workspaces", { name })).id);
         window.location.assign("/");
       } else {
-        enter(await post<Account>(`/api/v1/auth/${mode}`, { email, password }));
+        enter(await send<Account>("POST", `/api/v1/auth/${mode}`, { email, password }));
       }
     } catch (err) {
       setError((err as Error).message);

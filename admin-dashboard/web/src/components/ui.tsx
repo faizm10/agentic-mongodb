@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Database, FlaskConical, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Database, FlaskConical, GitBranch, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
 import { type Account, type ApiError, DEV, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
 
@@ -154,6 +154,7 @@ const NAV = [
   { href: "/", label: "Status", Icon: LayoutDashboard },
   { href: "/incidents", label: "Incidents", Icon: Siren },
   { href: "/ai-agent", label: "Investigations", Icon: Search },
+  { href: "/repositories", label: "Repositories", Icon: GitBranch },
   ...(DEV ? [{ href: "/demo", label: "Development", Icon: FlaskConical }] : []),
 ];
 

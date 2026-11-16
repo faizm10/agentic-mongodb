@@ -342,6 +342,20 @@ export function selectWorkspace(id: string) {
   document.cookie = `opsrelay_workspace=${encodeURIComponent(id)}; path=/; max-age=31536000; samesite=lax`;
 }
 
+/** A mutation; resolves to the envelope's data or throws an ApiError with the API's message. */
+export async function send<T>(method: "GET" | "POST" | "PUT" | "DELETE", path: string, body?: unknown): Promise<T> {
+  const request = `${method} ${path}`;
+  let res: Response;
+  try {
+    res = await fetch(path, { method, headers: body === undefined ? undefined : { "Content-Type": "application/json" },
+                              body: body === undefined ? undefined : JSON.stringify(body) });
+  } catch {
+    throw networkError(request);
+  }
+  if (!res.ok) throw await responseError(res, request);
+  return (await res.json()).data as T;
+}
+
 export const POLL_MS = 10_000;
 /** The monitor checks every 30s; the status overview refreshes on the same cadence. */
 export const STATUS_POLL_MS = 30_000;
