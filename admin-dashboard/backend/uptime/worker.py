@@ -31,6 +31,7 @@ from typing import Any
 import httpx
 
 from . import incidents as incident_engine
+from . import netguard
 from .classify import classify
 from .models import CheckRecord, IncidentEvent, ProbeResult, ServiceConfig
 from .probes import probe_availability, probe_frontend, probe_functional
@@ -132,7 +133,8 @@ class UptimeMonitor:
             slot = slot_for(started_wall, self.interval)
             services = [s for s in self.services() if s.enabled and workspace_id in (None, s.workspace_id)]
             async with httpx.AsyncClient(transport=self.transport, follow_redirects=True,
-                                         headers={"User-Agent": "opsrelay-uptime/1.0"}) as client:
+                                         headers={"User-Agent": "opsrelay-uptime/1.0"},
+                                         event_hooks={"request": [netguard.guard_request]}) as client:
                 records = await asyncio.gather(*(self.check_service(client, s, slot, scheduled=scheduled) for s in services))
 
             recorded, duplicates, events = [], 0, []
