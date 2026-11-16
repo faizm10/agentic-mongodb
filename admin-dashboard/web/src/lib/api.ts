@@ -327,10 +327,19 @@ async function getJson<T>(path: string): Promise<Envelope<T>> {
   } catch {
     throw networkError(request);
   }
+  // Signed out (401) or no workspace yet (409): the sign-in page handles both.
+  if ((res.status === 401 || res.status === 409) && !path.startsWith("/api/v1/auth/")) window.location.assign("/sign-in");
   if (!res.ok) throw await responseError(res, request);
   const body = await res.json().catch(() => null);
   if (!body || !("data" in body)) throw new ApiError(res.status, `The uptime API answered ${request} with something other than JSON data.`, "bad_response");
   return body as Envelope<T>;
+}
+
+export type Account = { user: { id: string; email: string }; workspaces: { id: string; name: string }[]; workspace_id: string | null };
+
+/** Which workspace the API reads; the server checks the signed-in account owns it. */
+export function selectWorkspace(id: string) {
+  document.cookie = `opsrelay_workspace=${encodeURIComponent(id)}; path=/; max-age=31536000; samesite=lax`;
 }
 
 export const POLL_MS = 10_000;

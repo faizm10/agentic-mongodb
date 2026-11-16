@@ -2,8 +2,9 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Database, FlaskConical, HelpCircle, LayoutDashboard, Search, Siren, XCircle } from "lucide-react";
-import { type ApiError, DEV, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window } from "@/lib/api";
+import { useEffect, useState } from "react";
+import { AlertTriangle, CheckCircle2, Database, FlaskConical, HelpCircle, LayoutDashboard, LogOut, Plus, Search, Siren, XCircle } from "lucide-react";
+import { type Account, type ApiError, DEV, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
 
 export function StatusIcon({ status, className = "h-4 w-4" }: { status: Status; className?: string }) {
@@ -183,6 +184,7 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
         <div className="flex h-14 items-center border-b border-line px-5"><Logo /></div>
         <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main"><NavLinks /></nav>
         <div className="space-y-3 border-t border-line p-4">
+          <AccountMenu />
           <StorageBadge storage={meta?.storage} />
           <LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} />
         </div>
@@ -192,12 +194,58 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
           <Logo />
           <span className="ml-auto min-w-0 truncate"><LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} /></span>
         </div>
+        <div className="px-4 pb-2"><AccountMenu /></div>
         <nav className="scroll-x flex gap-1 px-3 pb-2" aria-label="Main"><NavLinks /></nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-6 sm:px-8">
         <StaleNotice updatedAt={updatedAt} error={error} intervalMs={intervalMs} />
         {children}
       </main>
+    </div>
+  );
+}
+
+/** Who is signed in, which workspace the dashboard shows, and sign-out. Switching reloads so no data carries over. */
+function AccountMenu() {
+  const [account, setAccount] = useState<Account | null>(null);
+  useEffect(() => {
+    fetch("/api/v1/auth/me", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((b) => b && setAccount(b.data)).catch(() => undefined);
+  }, []);
+  if (!account) return null;
+  const current = account.workspace_id ?? account.workspaces[0]?.id ?? "";
+  const go = (id: string) => {
+    selectWorkspace(id);
+    window.location.assign("/");
+  };
+  const create = async () => {
+    const name = window.prompt("Name the new workspace")?.trim();
+    if (!name) return;
+    const res = await fetch("/api/v1/workspaces", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
+    if (res.ok) go((await res.json()).data.id);
+  };
+  return (
+    <div className="flex items-center gap-1.5 text-xs lg:flex-col lg:items-stretch">
+      <label className="flex min-w-0 flex-1 items-center gap-1.5">
+        <span className="sr-only">Workspace</span>
+        <select className="input min-w-0 py-1 text-xs" value={current} onChange={(e) => go(e.target.value)}>
+          {account.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+        </select>
+        <button type="button" className="btn px-2" onClick={create} aria-label="New workspace" title="New workspace">
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </label>
+      <div className="flex min-w-0 items-center gap-1.5 text-faint">
+        <span className="hidden min-w-0 flex-1 truncate lg:inline" title={account.user.email}>{account.user.email}</span>
+        <button
+          type="button" className="btn px-2" aria-label="Sign out" title="Sign out"
+          onClick={async () => {
+            await fetch("/api/v1/auth/sign-out", { method: "POST" }).catch(() => undefined);
+            window.location.assign("/sign-in");
+          }}
+        >
+          <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+        </button>
+      </div>
     </div>
   );
 }
