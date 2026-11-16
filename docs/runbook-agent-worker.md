@@ -19,7 +19,9 @@ external integrations (or staging fixtures). The local demo (`./dev.sh`) is unch
   `OPSRELAY_<APP>_VERSION_URL` reports a commit containing the merge commit and
   `OPSRELAY_<APP>_PROBE_URL` passes a fresh probe. Missing evidence is recorded as
   `unavailable`, and the incident stays open.
-- **Verification runs in throwaway containers** (`OPSRELAY_VERIFIER_RUNNER=docker`):
+- **Verification runs in throwaway containers when Docker is available** (`OPSRELAY_VERIFIER_RUNNER=auto`,
+  the default, with `OPSRELAY_VERIFIER_IMAGE` set). Without Docker, tests run as plain processes with a
+  scrubbed environment, and the heartbeat lists this as a fallback. Containers add:
   - no network, a read-only root and no capabilities;
   - user 65534, with CPU, memory and pid limits;
   - the workspace is streamed in over stdin, so `DOCKER_HOST` can be a separate runner host
@@ -54,12 +56,26 @@ docker run -d --name opsrelay-agent-worker --restart unless-stopped --stop-timeo
 - non-draft PRs are configured;
 - the two GitHub tokens are the same;
 - deployment URLs are missing while publishing is enabled;
-- production would run with the process verifier.
+- `OPSRELAY_VERIFIER_RUNNER=docker` is set but Docker is not reachable.
 
 It then pings Atlas and runs setup, which is idempotent and keeps existing records valid. It
 writes and reads back a checkpoint, runs one Vector Search query and checks the GitHub token.
 Any fallback (local cosine search, local embeddings, the process verifier) is logged as a
 fallback.
+
+## Running without Docker
+
+Docker is optional: the worker runs from a virtualenv, and verification falls back to plain processes.
+
+```bash
+python3.12 -m venv agents/.venv && agents/.venv/bin/pip install -r requirements.txt
+set -a; . /etc/opsrelay/agent-worker.env; set +a     # leave OPSRELAY_VERIFIER_IMAGE unset
+agents/.venv/bin/python -m agents.worker check         # lists "verifier: process runner" under fallbacks
+nohup agents/.venv/bin/python -m agents.worker >> /var/log/opsrelay-agent-worker.log 2>&1 &
+```
+
+Without containers, the code under test can reach the network and read files the worker's user can
+read. Run the worker as its own unprivileged user, keep report-only mode, and keep tokens out of files.
 
 ## Health
 
