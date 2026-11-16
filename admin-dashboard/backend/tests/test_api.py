@@ -472,3 +472,28 @@ def test_dependabot_alerts_become_one_incident_per_repository(tmp_path, settings
     assert scheduled()["dependabot"] == {"resolved": 1}
     assert owner.get(f"/api/v1/incidents/{incident['id']}").json()["data"]["state"] == "resolved"
     assert owner.get("/api/v1/repositories").json()["data"][0]["dependabot"]["result"] == "resolved"
+
+
+def test_notifications_post_each_event_once_and_retry_failed_sends(tmp_path, settings, clock, monkeypatch):
+    posted, up = [], [False]
+
+    def slack(request: httpx.Request) -> httpx.Response:
+        posted.append(request.read().decode())
+        return httpx.Response(200 if up[0] else 500)
+
+    monkeypatch.setenv("OPSRELAY_CRON_SECRET", "s3cret")
+    app = create_app(make_sqlite(tmp_path), settings, clock=clock, notify_transport=httpx.MockTransport(slack))
+    owner = signed_in(app)
+    assert owner.put("/api/v1/notifications/slack", json={"url": "https://example.com/x"}).status_code == 422
+    owner.put("/api/v1/notifications/slack", json={"url": "https://hooks.slack.com/services/T0/B0/abcdef"}).raise_for_status()
+    assert "hooks.slack.com" not in str(owner.get("/api/v1/notifications").json())  # the URL is a secret
+
+    def scheduled():
+        return TestClient(app).post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"}).json()["data"]["notifications"]
+
+    failed = scheduled()
+    assert failed["sent"] == 0 and failed["failed"] >= 1  # Slack down: nothing is marked as sent
+    up[0] = True
+    assert scheduled() == {"sent": failed["failed"], "failed": 0}
+    assert scheduled() == {"sent": 0, "failed": 0}  # already delivered
+    assert "Incident opened" in posted[-1] and "http://testserver/incidents/" in posted[-1]
