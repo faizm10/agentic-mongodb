@@ -351,6 +351,7 @@ def test_betterstack_alerts_route_to_their_workspace_and_replays_update_one_inci
     assert alert(path=other_hook["webhook_path"], secret=other_hook["secret"]).json()["data"]["result"] == "ignored", \
         "monitor 42 is only mapped in the owner's workspace"
     assert alert(path=hook["webhook_path"], secret=other_hook["secret"]).status_code == 401
+    assert TestClient(app).post(hook["webhook_path"], content=b"").status_code == 401  # empty body, no secret
     assert other.get(f"/api/v1/incidents/{incident_id}").status_code == 404
     assert other.put("/api/v1/repositories/shop/betterstack", json={"monitor_id": "42"}).status_code == 404
 
