@@ -302,6 +302,9 @@ class SqliteStorage:
                          (kind, f"$.{field}", value))
         return [json.loads(r["doc"]) for r in rows]
 
+    def all_docs(self, kind: str) -> list[dict[str, Any]]:
+        return [json.loads(r["doc"]) for r in self._all("SELECT doc FROM account_docs WHERE kind = ? ORDER BY id", (kind,))]
+
     def delete_doc(self, kind: str, doc_id: str) -> None:
         self._exec("DELETE FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))
 

@@ -85,6 +85,9 @@ function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[]
   return out.sort((a, b) => new Date(a.at).getTime() - new Date(b.at).getTime());
 }
 
+type DependabotAlert = { number: number; package: string; severity: string; summary: string; manifest: string | null;
+  patched_version: string | null; url: string | null };
+
 function Field({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div className="min-w-0 px-4 py-3 sm:px-5">
@@ -156,6 +159,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
         // A stopped investigation records tests_passed=false with no patch: nothing was tested.
         const noPatch = !(invDetails.changed_files as string[] | undefined)?.length;
         const alert = i.evidence.source === "betterstack" ? i.evidence as { cause?: string; url?: string; response_url?: string; screenshot_url?: string } : null;
+        const deps = i.evidence.source === "dependabot" ? (i.evidence.alerts as DependabotAlert[]) : null;
 
         return (
           <div className="mt-4 space-y-8">
@@ -172,6 +176,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
               <Field label="Affected service">{i.service_name}</Field>
               <Field label="Failed workflow">
                 {alert ? `Better Stack monitor · ${alert.cause ?? "alert"}`
+                  : deps ? `Dependabot · ${deps.length} open alert${deps.length === 1 ? "" : "s"}`
                   : demo ? `Service ${i.severity}` : `${functionalLabel(i.service_id)} · ${FAILURE_LABELS[i.failure_type ?? ""] ?? i.failure_type ?? "—"}`}
                 {!demo && failedChecks.length > 0 && <span className="block truncate font-mono text-xs text-muted" title={failedChecks.join(", ")}>{failedChecks.join(", ")}</span>}
               </Field>
@@ -212,6 +217,20 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                           <a key={label} href={url} target="_blank" rel="noreferrer" className="mr-3 text-xs text-accent hover:underline">{label}</a>
                         ))}
                       </div>
+                    ) : deps ? (
+                      <ul className="mt-2 space-y-2 text-sm">
+                        {deps.map((d) => (
+                          <li key={d.number}>
+                            <p className="font-medium text-ink">
+                              {d.package} <span className="text-xs font-normal text-muted">{d.severity}{d.patched_version ? ` · fixed in ${d.patched_version}` : " · no fix yet"}</span>
+                            </p>
+                            <p className="text-muted">{d.summary}</p>
+                            <p className="font-mono text-xs text-faint">
+                              {d.manifest}{d.url?.startsWith("https://") && <> · <a href={d.url} target="_blank" rel="noreferrer" className="font-sans text-accent hover:underline">Alert #{d.number}</a></>}
+                            </p>
+                          </li>
+                        ))}
+                      </ul>
                     ) : handoff.data?.probe_failures.length ? (
                       <ul className="mt-2 space-y-3">
                         {handoff.data.probe_failures.map((f) => {

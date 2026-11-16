@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, netguard, repositories, walkthrough
+from . import __version__, accounts, alerts, assistant, dependabot, netguard, repositories, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -374,13 +374,14 @@ def create_app(
         raise HTTPException(404, f"Unknown service '{service_id}'.")
 
     def service_keys(ws: str) -> list[str]:
-        """Monitored services plus mapped repositories (whose incidents come from Better Stack alerts)."""
-        return [s.id for s in services(ws)] + [m["id"] for m in storage.find_docs("repos", "workspace_id", ws)]
+        """Monitored services plus mapped repositories (Better Stack alerts) and their Dependabot alerts."""
+        mapped = [m["id"] for m in storage.find_docs("repos", "workspace_id", ws)]
+        return [s.id for s in services(ws)] + mapped + [dependabot.service_key(m) for m in mapped]
 
     def service_name(service_id: str) -> str:
         if site := storage.get_service(service_id):
             return site.name
-        mapping = storage.get_doc("repos", service_id) if ":" in service_id else None
+        mapping = storage.get_doc("repos", service_id.removesuffix("#dependabot")) if ":" in service_id else None
         return mapping["service_name"] if mapping else service_id
 
     def incidents(ws: str, *, state: str | None = None, limit: int = 50) -> list[Incident]:
@@ -496,6 +497,7 @@ def create_app(
                 "id": i.id, "app": service_name(i.service_id), "state": i.state, "severity": i.severity,
                 "title": i.title, "started_at": i.started_at, "resolved_at": i.resolved_at,
                 "failed_checks": assistant.plain_failures(i.evidence),
+                "dependabot_alerts": i.evidence.get("alerts") if i.evidence.get("source") == "dependabot" else None,
                 "fix_confirmation_by_person": fix_confirmation(i),
                 "repair_agent": storage.get_agent_findings(i.id),
             } for i in open_incidents],
@@ -813,7 +815,9 @@ def create_app(
         result = await monitor.run_cycle()
         if result is None:
             raise HTTPException(409, "A monitoring cycle is already running.")
-        return ok({"checked": len(result["statuses"]), "recorded": len(result["recorded"]), "duplicates": result["duplicates"]})
+        synced = [await dependabot.sync(storage, m, clock(), github_transport) for m in storage.all_docs("repos")]
+        return ok({"checked": len(result["statuses"]), "recorded": len(result["recorded"]), "duplicates": result["duplicates"],
+                   "dependabot": {r["result"]: sum(x["result"] == r["result"] for x in synced) for r in synced}})
 
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
     def patch_service(service_id: str, body: ServicePatch, ws: str = Depends(workspace)):
