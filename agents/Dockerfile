@@ -10,7 +10,7 @@ ENV OPSRELAY_RELEASE=${OPSRELAY_RELEASE} PYTHONUNBUFFERED=1 PYTHONDONTWRITEBYTEC
 RUN apt-get update && apt-get install -y --no-install-recommends git ca-certificates \
     && rm -rf /var/lib/apt/lists/* && useradd --uid 10001 --create-home opsrelay \
     && mkdir /repo && chown opsrelay /repo
-# Only for OPSRELAY_VERIFIER_RUNNER=docker, which points DOCKER_HOST at a separate runner host.
+# Only used when the verifier runs in Docker (auto with an image, or =docker), which points DOCKER_HOST at a separate runner host.
 COPY --from=docker-cli /usr/local/bin/docker /usr/local/bin/docker
 WORKDIR /app
 COPY agents/requirements.lock agents/requirements.lock
