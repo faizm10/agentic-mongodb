@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS incidents (
 CREATE UNIQUE INDEX IF NOT EXISTS one_open_incident ON incidents(service_id) WHERE state = 'open';
 CREATE INDEX IF NOT EXISTS incidents_by_start ON incidents(started_at);
 CREATE TABLE IF NOT EXISTS worker (id TEXT PRIMARY KEY, owner TEXT, lease_expires_at TEXT, doc TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS account_docs (kind TEXT NOT NULL, id TEXT NOT NULL, doc TEXT NOT NULL, PRIMARY KEY (kind, id));
 """
 
 
@@ -278,6 +279,27 @@ class SqliteStorage:
 
     def supports_recovery(self) -> bool:
         return False
+
+    # --------------------------------------------------------------- accounts
+    def insert_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> bool:
+        cur = self._exec("INSERT OR IGNORE INTO account_docs(kind, id, doc) VALUES (?,?,?)", (kind, doc_id, json.dumps(doc)))
+        return cur.rowcount == 1
+
+    def put_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> None:
+        self._exec("INSERT INTO account_docs(kind, id, doc) VALUES (?,?,?) ON CONFLICT(kind, id) DO UPDATE SET doc=excluded.doc",
+                   (kind, doc_id, json.dumps(doc)))
+
+    def get_doc(self, kind: str, doc_id: str) -> dict[str, Any] | None:
+        row = self._one("SELECT doc FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))
+        return json.loads(row["doc"]) if row else None
+
+    def find_docs(self, kind: str, field: str, value: str) -> list[dict[str, Any]]:
+        rows = self._all("SELECT doc FROM account_docs WHERE kind = ? AND json_extract(doc, ?) = ? ORDER BY id",
+                         (kind, f"$.{field}", value))
+        return [json.loads(r["doc"]) for r in rows]
+
+    def delete_doc(self, kind: str, doc_id: str) -> None:
+        self._exec("DELETE FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))
 
     def get_agent_findings(self, uptime_incident_id: str) -> dict[str, Any] | None:
         return None  # agent incidents live in MongoDB only

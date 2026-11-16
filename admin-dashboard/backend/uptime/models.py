@@ -57,6 +57,7 @@ class ServiceConfig(Model):
         default=None, description="Records an outage can interrupt. The incident stays open after the service is "
                                   "healthy until the OpsRelay recovery worker has a verified outcome for each one.")
     enabled: bool = True
+    workspace_id: str = Field(default="demo", description="The workspace that owns this service.")
 
     @property
     def availability_url(self) -> str:

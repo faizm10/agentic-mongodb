@@ -57,6 +57,7 @@ export function AssistantChat() {
     }
   }
 
+  if (pathname === "/sign-in") return null;
   if (!open) {
     return (
       <button

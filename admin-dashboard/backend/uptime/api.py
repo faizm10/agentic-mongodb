@@ -1,4 +1,5 @@
-"""Dashboard API (read and mutation endpoints are open; keep it on localhost or behind your own auth).
+"""Dashboard API. Every route except health and sign-in needs a session cookie, and data routes only
+see the services and incidents of a workspace the signed-in account owns.
 
 Every response is ``{"data": ..., "meta": {"generated_at", "storage"}}``; every error is
 ``{"error": {"code", "message"}}``. No secrets (MongoDB URI) are ever returned.
@@ -15,12 +16,13 @@ from datetime import datetime, timedelta
 from typing import Any, Generic, Literal, TypeVar
 
 from fastapi import Depends, FastAPI, HTTPException, Query, Request
+from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, assistant, bad_deploys, demo_outages, demo_traffic, walkthrough
+from . import __version__, accounts, assistant, bad_deploys, demo_outages, demo_traffic, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -32,6 +34,8 @@ from .worker import UptimeMonitor, utcnow
 
 logger = logging.getLogger("opsrelay.uptime.api")
 T = TypeVar("T")
+SESSION_COOKIE = "opsrelay_session"
+WORKSPACE_COOKIE = "opsrelay_workspace"
 Window = Literal["24h", "7d", "30d"]
 
 
@@ -213,6 +217,15 @@ class ServicePatch(BaseModel):
     enabled: bool
 
 
+class CredentialsIn(BaseModel):
+    email: str = Field(pattern=r"^[^@\s]+@[^@\s]+\.[^@\s]+$", max_length=254)
+    password: str = Field(min_length=8, max_length=200)
+
+
+class WorkspaceIn(BaseModel):
+    name: str = Field(min_length=1, max_length=80)
+
+
 class DemoOutageIn(BaseModel):
     scenario: Literal["payment", "images", "inventory", "send", "receive", "both", "confirmation_timeout"]
 
@@ -286,6 +299,28 @@ def create_app(
         if not demo_controls:
             raise HTTPException(404, "Demo controls are off. They run only with OPSRELAY_ENV=development or demo.")
 
+    def signed_in(request: Request) -> dict[str, Any]:
+        user = accounts.session_user(storage, request.cookies.get(SESSION_COOKIE), clock())
+        if user is None:
+            raise HTTPException(401, "Sign in to view this dashboard.")
+        return user
+
+    def workspace(request: Request, user: dict[str, Any] = Depends(signed_in)) -> str:
+        """The workspace this request reads, which the signed-in account must own (404 otherwise, so ids don't leak)."""
+        requested = request.headers.get("x-opsrelay-workspace") or request.cookies.get(WORKSPACE_COOKIE)
+        ws = accounts.owned_workspace(storage, user["id"], requested)
+        if ws is None and not requested:
+            raise HTTPException(409, "Create a workspace first.")
+        if ws is None:
+            raise HTTPException(404, f"Unknown workspace '{requested}'.")
+        return ws["id"]
+
+    def start_session(response: JSONResponse, request: Request, user: dict[str, Any]) -> JSONResponse:
+        response.set_cookie(SESSION_COOKIE, accounts.start_session(storage, user["id"], clock()),
+                            max_age=accounts.SESSION_DAYS * 86400, httponly=True, samesite="lax",
+                            secure=request.headers.get("x-forwarded-proto", request.url.scheme) == "https")
+        return response
+
     @app.exception_handler(HTTPException)
     async def http_error(_: Request, exc: HTTPException):
         code = {401: "UNAUTHORIZED", 403: "FORBIDDEN", 404: "NOT_FOUND", 409: "CONFLICT"}.get(exc.status_code, "ERROR")
@@ -296,15 +331,19 @@ def create_app(
         message = "; ".join(f"{'.'.join(str(p) for p in e['loc'])}: {e['msg']}" for e in exc.errors())
         return JSONResponse(status_code=422, content={"error": {"code": "VALIDATION_FAILED", "message": message}})
 
-    def services() -> list[ServiceConfig]:
+    def services(ws: str) -> list[ServiceConfig]:
         stored = {s.id: s for s in storage.list_services()}
-        return [stored.get(s.id, s) for s in settings.services]
+        return [s for s in (stored.get(s.id, s) for s in settings.services) if s.workspace_id == ws]
 
-    def service_or_404(service_id: str) -> ServiceConfig:
-        for s in services():
+    def service_or_404(service_id: str, ws: str) -> ServiceConfig:
+        for s in services(ws):
             if s.id == service_id:
                 return s
         raise HTTPException(404, f"Unknown service '{service_id}'.")
+
+    def incidents(ws: str, *, state: str | None = None, limit: int = 50) -> list[Incident]:
+        found = [i for s in services(ws) for i in storage.list_incidents(service_id=s.id, state=state, limit=limit)]
+        return sorted(found, key=lambda i: i.started_at, reverse=True)[:limit]
 
     def current(service: ServiceConfig, now: datetime) -> CurrentStatus:
         state = storage.get_state(service.id) or ServiceState(service_id=service.id)
@@ -333,7 +372,7 @@ def create_app(
                                current=current(service, now), uptime=stats, bars=b)
 
     def incident_out(incident: Incident, now: datetime, *, related: bool = False) -> IncidentOut:
-        names = {s.id: s.name for s in services()}
+        names = {s.id: s.name for s in settings.services}
         related_ci = []
         if related:
             for doc in storage.find_agent_incidents(incident.app, incident.started_at, incident.resolved_at or now):
@@ -358,7 +397,7 @@ def create_app(
         return "complete" if recovery and recovery.get("phase") == "complete" else "not_needed"
 
     def agent_activity(incident: Incident, now: datetime) -> AgentActivity:
-        name = next((s.name for s in services() if s.id == incident.service_id), incident.service_id)
+        name = next((s.name for s in settings.services if s.id == incident.service_id), incident.service_id)
         run = storage.get_agent_activity(incident.id)
         if run is None:
             state = "unavailable" if storage.describe()["backend"] != "mongodb" else "waiting"
@@ -386,18 +425,16 @@ def create_app(
         answers = [e.type for e in incident.events if e.type in ("fix_confirmed", "fix_disputed")]
         return None if not answers else "confirmed" if answers[-1] == "fix_confirmed" else "disputed"
 
-    def assistant_context(focus: str | None, now: datetime) -> dict[str, Any]:
+    def assistant_context(focus: str | None, now: datetime, ws: str) -> dict[str, Any]:
         """What the dashboard assistant may know: status, open incidents and the agent's findings."""
-        incidents = storage.list_incidents(state="open")
-        if focus and not any(i.id == focus for i in incidents):
-            focused = storage.get_incident(focus)
-            if focused is not None:
-                incidents.append(focused)
-        names = {s.id: s.name for s in services()}
+        open_incidents = incidents(ws, state="open")
+        if focus and not any(i.id == focus for i in open_incidents):
+            open_incidents.append(incident_or_404(focus, ws))
+        names = {s.id: s.name for s in services(ws)}
         return {
             "now": now,
             "services": [{"name": o.name, "status": o.current.status, "summary": o.current.summary}
-                         for o in (overview(s, "24h", now, bars=False) for s in services())],
+                         for o in (overview(s, "24h", now, bars=False) for s in services(ws))],
             "viewing_incident": focus,
             "incidents": [{
                 "id": i.id, "app": names.get(i.service_id, i.service_id), "state": i.state, "severity": i.severity,
@@ -405,10 +442,10 @@ def create_app(
                 "failed_checks": assistant.plain_failures(i.evidence),
                 "fix_confirmation_by_person": fix_confirmation(i),
                 "repair_agent": storage.get_agent_findings(i.id),
-            } for i in incidents],
+            } for i in open_incidents],
         }
 
-    def monitoring(now: datetime) -> MonitoringHealth:
+    def monitoring(now: datetime, ws: str) -> MonitoringHealth:
         worker = storage.get_worker()
         interval = settings.interval_seconds
         lease_held = bool(worker and worker.owner and worker.lease_expires_at and worker.lease_expires_at > now)
@@ -418,21 +455,61 @@ def create_app(
         elif now - last > timedelta(seconds=settings.stale_after_intervals * interval):
             status, message = "stale", f"No cycle for {int((now - last).total_seconds())}s; start the worker (python -m uptime worker)."
         else:
-            status, message = "running", f"Checking {len(services())} services every {interval}s."
+            status, message = "running", f"Checking {len(services(ws))} services every {interval}s."
         return MonitoringHealth(status=status, message=message, interval_seconds=interval, worker=worker,
                                 lease_held=lease_held, next_cycle_expected_at=(last + timedelta(seconds=interval)) if last else None,
-                                total_checks=storage.count_checks(), storage=storage.describe())
+                                total_checks=sum(storage.count_checks(s.id) for s in services(ws)), storage=storage.describe())
 
     # ------------------------------------------------------------- routes
     @app.get("/api/v1/health", response_model=Envelope[dict[str, Any]])
     def api_health():
         return ok({"status": "ok", "service": "opsrelay-uptime-api"})
 
-    @app.get("/api/v1/monitoring", response_model=Envelope[MonitoringHealth])
-    def get_monitoring():
-        return ok(monitoring(clock()))
+    def account(user: dict[str, Any], request: Request) -> dict[str, Any]:
+        owned = accounts.workspaces(storage, user["id"])
+        current = accounts.owned_workspace(storage, user["id"], request.cookies.get(WORKSPACE_COOKIE))
+        return {"user": user, "workspaces": [{"id": w["id"], "name": w["name"]} for w in owned],
+                "workspace_id": current["id"] if current else None}
 
-    @app.get("/api/v1/dependencies", response_model=Envelope[list[DependencyCheck]])
+    @app.post("/api/v1/auth/sign-up", response_model=Envelope[dict[str, Any]])
+    def sign_up(body: CredentialsIn, request: Request):
+        try:
+            user = accounts.sign_up(storage, body.email, body.password, clock())
+        except accounts.AccountError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return start_session(JSONResponse(jsonable_encoder(ok(account(user, request)))), request, user)
+
+    @app.post("/api/v1/auth/sign-in", response_model=Envelope[dict[str, Any]])
+    def sign_in(body: CredentialsIn, request: Request):
+        try:
+            user = accounts.sign_in(storage, body.email, body.password)
+        except accounts.AccountError as exc:
+            raise HTTPException(exc.status, str(exc)) from exc
+        return start_session(JSONResponse(jsonable_encoder(ok(account(user, request)))), request, user)
+
+    @app.post("/api/v1/auth/sign-out", response_model=Envelope[dict[str, Any]])
+    def sign_out(request: Request):
+        if token := request.cookies.get(SESSION_COOKIE):
+            accounts.end_session(storage, token)
+        response = JSONResponse(jsonable_encoder(ok({"signed_out": True})))
+        response.delete_cookie(SESSION_COOKIE)
+        response.delete_cookie(WORKSPACE_COOKIE)
+        return response
+
+    @app.get("/api/v1/auth/me", response_model=Envelope[dict[str, Any]])
+    def me(request: Request, user: dict[str, Any] = Depends(signed_in)):
+        return ok(account(user, request))
+
+    @app.post("/api/v1/workspaces", response_model=Envelope[dict[str, Any]])
+    def create_workspace(body: WorkspaceIn, user: dict[str, Any] = Depends(signed_in)):
+        ws = accounts.create_workspace(storage, user["id"], body.name, clock())
+        return ok({"id": ws["id"], "name": ws["name"]})
+
+    @app.get("/api/v1/monitoring", response_model=Envelope[MonitoringHealth])
+    def get_monitoring(ws: str = Depends(workspace)):
+        return ok(monitoring(clock(), ws))
+
+    @app.get("/api/v1/dependencies", response_model=Envelope[list[DependencyCheck]], dependencies=[Depends(signed_in)])
     async def get_dependencies():
         nonlocal dependency_cache, dependency_expires_at
         if dependency_cache is None or time.monotonic() >= dependency_expires_at:
@@ -443,9 +520,9 @@ def create_app(
         return ok(dependency_cache)
 
     @app.get("/api/v1/summary", response_model=Envelope[Summary])
-    def summary(window: Window = "24h"):
+    def summary(window: Window = "24h", ws: str = Depends(workspace)):
         now = clock()
-        overviews = [overview(s, window, now, bars=True) for s in services()]
+        overviews = [overview(s, window, now, bars=True) for s in services(ws)]
         statuses = [o.current.status for o in overviews]
         if "down" in statuses:
             overall = {"status": "down", "label": "Major outage"}
@@ -457,32 +534,34 @@ def create_app(
             overall = {"status": "unknown", "label": "Monitoring data incomplete"}
         affected = [o.name for o in overviews if o.current.status in ("down", "degraded")]
         overall["affected_services"] = affected
-        open_incidents = storage.list_incidents(state="open")
+        open_incidents = incidents(ws, state="open")
         active = [incident_out(i, now) for i in open_incidents]
-        recent = [incident_out(i, now) for i in storage.list_incidents(state="resolved", limit=10)]
+        recent = [incident_out(i, now) for i in incidents(ws, state="resolved", limit=10)]
         return ok(Summary(overall=overall, window=window, services=overviews, active_incidents=active,
-                          recent_incidents=recent, monitoring=monitoring(now),
+                          recent_incidents=recent, monitoring=monitoring(now, ws),
                           agent_activity=[agent_activity(i, now) for i in open_incidents]))
 
     @app.get("/api/v1/learning", response_model=Envelope[Learning])
-    def learning():
+    def learning(ws: str = Depends(workspace)):
         """What the RL fix policy has learned, from rl_experiences / rl_training_runs (read-only)."""
-        data = storage.get_learning_summary()
+        apps = {s.app for s in services(ws)}
+        data = storage.get_learning_summary() if apps else None
         if not data:
             return ok(Learning(available=False))
         decisions = [{**d, "pr_url": d["pr_url"] if isinstance(d.get("pr_url"), str)
-                      and d["pr_url"].startswith("https://") else None} for d in data["decisions"]]
+                      and d["pr_url"].startswith("https://") else None} for d in data["decisions"] if d.get("app") in apps]
+        data["strategies"] = [st for st in data["strategies"] if st.get("app") in apps]
         return ok(Learning(available=True, **{**data, "decisions": decisions}))
 
     @app.get("/api/v1/services", response_model=Envelope[list[ServiceOverview]])
-    def list_services(window: Window = "24h"):
+    def list_services(window: Window = "24h", ws: str = Depends(workspace)):
         now = clock()
-        return ok([overview(s, window, now, bars=False) for s in services()])
+        return ok([overview(s, window, now, bars=False) for s in services(ws)])
 
     @app.get("/api/v1/services/{service_id}", response_model=Envelope[dict[str, Any]])
-    def service_detail(service_id: str):
+    def service_detail(service_id: str, ws: str = Depends(workspace)):
         now = clock()
-        service = service_or_404(service_id)
+        service = service_or_404(service_id, ws)
         windows = {w: uptime(service, w, now, bars=False)[0] for w in WINDOWS}
         incidents = storage.list_incidents(service_id=service_id, limit=20)
         return ok({
@@ -494,58 +573,63 @@ def create_app(
         })
 
     @app.get("/api/v1/services/{service_id}/uptime", response_model=Envelope[dict[str, Any]])
-    def service_uptime(service_id: str, window: Window = "24h"):
+    def service_uptime(service_id: str, window: Window = "24h", ws: str = Depends(workspace)):
         now = clock()
-        stats, bars = uptime(service_or_404(service_id), window, now, bars=True)
+        stats, bars = uptime(service_or_404(service_id, ws), window, now, bars=True)
         return ok({"stats": stats, "bars": bars})
 
     @app.get("/api/v1/services/{service_id}/checks", response_model=Envelope[list[dict[str, Any]]])
-    def service_checks(service_id: str, limit: int = Query(default=30, ge=1, le=500), before: datetime | None = None):
-        service_or_404(service_id)
+    def service_checks(service_id: str, limit: int = Query(default=30, ge=1, le=500), before: datetime | None = None,
+                       ws: str = Depends(workspace)):
+        service_or_404(service_id, ws)
         return ok([c.model_dump() for c in storage.list_checks(service_id, limit=limit, before=before)])
 
     @app.get("/api/v1/services/{service_id}/latency", response_model=Envelope[list[dict[str, Any]]])
-    def service_latency(service_id: str, window: Window = "24h", points: int = Query(default=120, ge=10, le=500)):
+    def service_latency(service_id: str, window: Window = "24h", points: int = Query(default=120, ge=10, le=500),
+                        ws: str = Depends(workspace)):
         now = clock()
-        service = service_or_404(service_id)
+        service = service_or_404(service_id, ws)
         samples = storage.list_samples(service_id, needed_since(window, now, service.interval_seconds), now)
         return ok(latency_series(samples, window, now, points))
 
     @app.get("/api/v1/incidents", response_model=Envelope[list[IncidentOut]])
     def list_incidents(state: Literal["open", "resolved", "all"] = "all", service_id: str | None = None,
-                       limit: int = Query(default=50, ge=1, le=200)):
+                       limit: int = Query(default=50, ge=1, le=200), ws: str = Depends(workspace)):
         now = clock()
-        items = storage.list_incidents(service_id=service_id, state=None if state == "all" else state, limit=limit)
+        if service_id is not None:
+            service_or_404(service_id, ws)
+        items = [i for i in incidents(ws, state=None if state == "all" else state, limit=200 if service_id else limit)
+                 if service_id in (None, i.service_id)][:limit]
         return ok([incident_out(i, now) for i in items])
 
     @app.get("/api/v1/incidents/{incident_id}/walkthrough", response_model=Envelope[dict[str, Any]])
-    def incident_walkthrough(incident_id: str):
+    def incident_walkthrough(incident_id: str, ws: str = Depends(workspace)):
         """What the monitor, the repair agent and the recovery worker recorded, as ordered steps."""
-        incident = incident_or_404(incident_id)
+        incident = incident_or_404(incident_id, ws)
         return ok(walkthrough.build(incident, storage.get_agent_run(incident_id), storage.get_recovery(incident_id), clock()))
 
-    def incident_or_404(incident_id: str) -> Incident:
+    def incident_or_404(incident_id: str, ws: str) -> Incident:
         incident = storage.get_incident(incident_id)
-        if incident is None:
+        if incident is None or not any(s.id == incident.service_id for s in services(ws)):
             raise HTTPException(404, f"Unknown incident '{incident_id}'.")
         return incident
 
     @app.get("/api/v1/incidents/{incident_id}", response_model=Envelope[IncidentOut])
-    def get_incident(incident_id: str):
-        return ok(incident_out(incident_or_404(incident_id), clock(), related=True))
+    def get_incident(incident_id: str, ws: str = Depends(workspace)):
+        return ok(incident_out(incident_or_404(incident_id, ws), clock(), related=True))
 
     @app.get("/api/v1/incidents/{incident_id}/evidence", response_model=Envelope[dict[str, Any]])
-    def incident_evidence(incident_id: str):
-        incident = incident_or_404(incident_id)
-        service = next((s for s in services() if s.id == incident.service_id), None)
+    def incident_evidence(incident_id: str, ws: str = Depends(workspace)):
+        incident = incident_or_404(incident_id, ws)
+        service = next((s for s in services(ws) if s.id == incident.service_id), None)
         return ok(build_handoff(incident, service, clock()))
 
     # ---------------------------------------------------------- mutations
     @app.post("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def start_demo_outage(service_id: str, body: DemoOutageIn):
+    def start_demo_outage(service_id: str, body: DemoOutageIn, ws: str = Depends(workspace)):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id)
+        service_or_404(service_id, ws)
         try:
             demo_outages.activate(service_id, body.scenario)
         except ValueError as exc:
@@ -557,10 +641,10 @@ def create_app(
         return ok({"service_id": service_id, "requested": True})
 
     @app.delete("/api/v1/demo/outages/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def stop_demo_outage(service_id: str):
+    def stop_demo_outage(service_id: str, ws: str = Depends(workspace)):
         if service_id not in demo_outages.SCENARIOS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id)
+        service_or_404(service_id, ws)
         try:
             demo_outages.clear(service_id)
         except OSError as exc:
@@ -572,10 +656,10 @@ def create_app(
     # Bad deploys push a real bug to the base branch on GitHub. Responses never name the
     # bug: the repair agent must find it from the evidence.
     @app.post("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def ship_bad_deploy(service_id: str, body: BadDeployIn):
+    def ship_bad_deploy(service_id: str, body: BadDeployIn, ws: str = Depends(workspace)):
         if service_id not in bad_deploys.APPS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id)
+        service_or_404(service_id, ws)
         try:
             bad_deploys.ship(service_id, body.scenario)
         except ValueError as exc:
@@ -589,10 +673,10 @@ def create_app(
         return ok({"service_id": service_id, "requested": True, "branch": bad_deploys.branch()})
 
     @app.delete("/api/v1/demo/bad-deploys/{service_id}", response_model=Envelope[dict[str, Any]], dependencies=[Depends(require_demo)])
-    def restore_bad_deploy(service_id: str):
+    def restore_bad_deploy(service_id: str, ws: str = Depends(workspace)):
         if service_id not in bad_deploys.APPS:
             raise HTTPException(404, f"Unknown demo service '{service_id}'.")
-        service_or_404(service_id)
+        service_or_404(service_id, ws)
         try:
             bad_deploys.restore(service_id)
         except bad_deploys.BadDeployError as exc:
@@ -604,29 +688,31 @@ def create_app(
         return ok({"service_id": service_id, "requested": True})
 
     @app.post("/api/v1/demo/checkouts", response_model=Envelope[list[dict[str, Any]]], dependencies=[Depends(require_demo)])
-    async def demo_checkouts(body: DemoCheckoutsIn):
+    async def demo_checkouts(body: DemoCheckoutsIn, ws: str = Depends(workspace)):
         """Place customer checkouts on NovaMart (each retried once with the same checkout ID on failure)."""
-        return ok(await demo_traffic.place_checkouts(service_or_404("novamart"), body.count))
+        return ok(await demo_traffic.place_checkouts(service_or_404("novamart", ws), body.count))
 
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])
-    def patch_service(service_id: str, body: ServicePatch):
-        service_or_404(service_id)
+    def patch_service(service_id: str, body: ServicePatch, ws: str = Depends(workspace)):
+        service_or_404(service_id, ws)
         updated = storage.set_service_enabled(service_id, body.enabled)
         return ok(PublicServiceConfig(**updated.model_dump()))
 
     @app.post("/api/v1/monitor/check-now", response_model=Envelope[dict[str, Any]])
-    async def check_now():
+    async def check_now(ws: str = Depends(workspace)):
         if monitor is not None:
             result = await monitor.run_cycle(scheduled=False)
             if result is None:
                 raise HTTPException(409, "A monitoring cycle is already running.")
-            return ok({"ran": True, "statuses": result["statuses"], "recorded": result["recorded"]})
+            mine = {s.id for s in services(ws)}
+            return ok({"ran": True, "statuses": {k: v for k, v in result["statuses"].items() if k in mine},
+                       "recorded": result["recorded"]})
         storage.request_check(clock())
         return ok({"ran": False, "requested": True, "message": "The worker will run a check within ~1s."})
 
     @app.post("/api/v1/incidents/{incident_id}/acknowledge", response_model=Envelope[IncidentOut])
-    def acknowledge(incident_id: str, body: AckIn):
-        incident = incident_or_404(incident_id)
+    def acknowledge(incident_id: str, body: AckIn, ws: str = Depends(workspace)):
+        incident = incident_or_404(incident_id, ws)
         now = clock()
         incident.acknowledged_at, incident.acknowledged_by = now, body.by
         incident.events.append(IncidentEvent(at=now, type="acknowledged", message=f"Acknowledged by {body.by}. {body.note}".strip()))
@@ -634,14 +720,14 @@ def create_app(
         return ok(incident_out(incident, now))
 
     @app.post("/api/v1/incidents/{incident_id}/fix-confirmation", response_model=Envelope[IncidentOut])
-    def confirm_fix(incident_id: str, body: FixConfirmationIn):
+    def confirm_fix(incident_id: str, body: FixConfirmationIn, ws: str = Depends(workspace)):
         """A person says whether the agent's merged PR fixed the problem.
 
         Yes applies the fix to the running checkout (the bad deploy is restored locally; main
         already has the fix, so nothing is pushed) and asks for a fresh check, which resolves the
         incident once the probe passes. No records it and leaves the incident open.
         """
-        incident = incident_or_404(incident_id)
+        incident = incident_or_404(incident_id, ws)
         findings = storage.get_agent_findings(incident_id)
         if not findings or findings.get("status") != "resolved":
             raise HTTPException(409, "The repair PR for this incident has not been merged yet.")
@@ -663,14 +749,14 @@ def create_app(
         return ok(incident_out(incident, now))
 
     @app.post("/api/v1/incidents/{incident_id}/fix-merged", response_model=Envelope[IncidentOut], dependencies=[Depends(require_demo)])
-    def mark_fix_merged(incident_id: str):
+    def mark_fix_merged(incident_id: str, ws: str = Depends(workspace)):
         """A person says the fix for this incident is merged into main.
 
         Like a confirmed fix, the running checkout gets the fix (the bad deploy is restored locally,
         and reverted on main only if the bug is somehow still there) and a fresh check resolves the
         incident once the probe passes.
         """
-        incident = incident_or_404(incident_id)
+        incident = incident_or_404(incident_id, ws)
         if incident.state != "open":
             raise HTTPException(409, "This incident is already resolved.")
         if incident.service_id in bad_deploys.APPS:
@@ -689,17 +775,17 @@ def create_app(
         return ok(incident_out(incident, now))
 
     @app.post("/api/v1/assistant/chat", response_model=Envelope[dict[str, Any]])
-    async def assistant_chat(body: assistant.ChatIn):
+    async def assistant_chat(body: assistant.ChatIn, ws: str = Depends(workspace)):
         try:
-            reply = await assistant.answer(assistant_context(body.incident_id, clock()), body.messages,
+            reply = await assistant.answer(assistant_context(body.incident_id, clock(), ws), body.messages,
                                            transport=assistant_transport)
         except assistant.AssistantError as exc:
             raise HTTPException(exc.status, str(exc)) from exc
         return ok({"reply": reply})
 
     @app.post("/api/v1/incidents/{incident_id}/links", response_model=Envelope[IncidentOut])
-    def add_link(incident_id: str, body: LinkIn):
-        incident = incident_or_404(incident_id)
+    def add_link(incident_id: str, body: LinkIn, ws: str = Depends(workspace)):
+        incident = incident_or_404(incident_id, ws)
         now = clock()
         if not any(link.url == body.url for link in incident.links):
             incident.links.append(IncidentLink(**body.model_dump()))

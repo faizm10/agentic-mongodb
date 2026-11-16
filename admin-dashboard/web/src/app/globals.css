@@ -34,6 +34,9 @@
   .btn {
     @apply inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-hover disabled:cursor-wait disabled:opacity-50;
   }
+  .input {
+    @apply w-full rounded-md border border-line-strong bg-page px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none;
+  }
   .btn-primary {
     @apply border-accent bg-accent text-white hover:bg-accent/90;
   }
