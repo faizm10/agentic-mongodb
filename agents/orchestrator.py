@@ -400,7 +400,10 @@ class Orchestrator:
         intent = {
             "branch": branch_for(inc),
             "base_sha": inc["commit_sha"],
-            "title": (f"[OpsRelay] Fix {inc['app']} live incident: {inc['live'].get('title') or ''}"[:120]
+            # Name the fix itself, so the PR list says what changed rather than which incident it was.
+            "title": (f"[OpsRelay] {inc['app']}: {fix.splitlines()[0]}"  # the publisher shortens it with "..."
+                      if (fix := (inc.get("patch") or {}).get("summary", "").strip())
+                      else f"[OpsRelay] Fix {inc['app']} live incident: {inc['live'].get('title') or ''}"[:120]
                       if inc.get("source") == m.SOURCE_LIVE
                       else f"[OpsRelay] Fix {inc['app']} CI failure (run {inc['run_id']})"),
             "saved_at": m.utcnow(),
