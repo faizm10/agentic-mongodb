@@ -22,3 +22,4 @@ node_modules/
 # OpsRelay dev demo
 agents/.fake_github.json
 /.dev/
+.ruff_cache/

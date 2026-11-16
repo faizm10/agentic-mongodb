@@ -1,6 +1,21 @@
 # OpsRelay
 
-OpsRelay is a demo incident detection and repair system built around two applications: **NovaMart**, a shopping storefront, and **NovaConnect**, a messaging app. GitHub Actions runs their checks. The Python agents can inspect failed runs, reproduce failures, propose and verify fixes, and open a pull request for human review. A separate uptime monitor checks both running apps and displays service status and incidents.
+[![opsrelay-ci](https://github.com/faizm10/agentic-mongodb/actions/workflows/opsrelay-ci.yml/badge.svg)](https://github.com/faizm10/agentic-mongodb/actions/workflows/opsrelay-ci.yml)
+[![uptime-checks](https://github.com/faizm10/agentic-mongodb/actions/workflows/uptime-checks.yml/badge.svg)](https://github.com/faizm10/agentic-mongodb/actions/workflows/uptime-checks.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+OpsRelay watches your sites and, when something breaks, sends an AI agent to investigate. Add your sites to a
+workspace and OpsRelay checks them every 5 minutes, opens an incident when one goes down, and can take alerts
+from Better Stack. For repositories you connect, the repair agent reproduces the failure, proposes a fix, verifies
+it with the app's tests and opens a pull request for a person to review. It never merges on its own.
+
+Live dashboard: https://opsrelay-dashboard.vercel.app
+
+**How it fits together**
+- **Dashboard and uptime API** ([`admin-dashboard/`](admin-dashboard/README.md)): Next.js and FastAPI, deployed
+  as one Vercel project.
+- **Repair agents** ([`agents/`](agents/README.md)): Python, with incident state and repair memory in MongoDB Atlas.
+- **Demo apps for the agent to repair:** **NovaMart**, a shopping storefront, and **NovaConnect**, a messaging app.
 
 ## Repository map
 
@@ -10,7 +25,7 @@ OpsRelay is a demo incident detection and repair system built around two applica
 | [`message-platform/`](message-platform/README.md) | NovaConnect: Next.js client, FastAPI and WebSocket API, SQLite storage, and functional probe | App: http://localhost:3200 · API: http://localhost:8200 |
 | [`admin-dashboard/`](admin-dashboard/README.md) | Uptime worker, status API, and Next.js dashboard | Dashboard: http://localhost:3300 · API: http://localhost:8300 |
 | [`agents/`](agents/README.md) | CI failure monitor, diagnosis and repair pipeline, MongoDB workflow state, and GitHub PR publisher | CLI and worker |
-| [`.github/workflows/`](.github/workflows/) | Active GitHub Actions workflows for the two demo apps | GitHub Actions |
+| [`.github/workflows/`](.github/workflows/) | CI for every component, plus the 5-minute scheduled uptime checks | GitHub Actions |
 
 The apps run independently. NovaMart stores demo orders in a local JSON file; NovaConnect stores demo messages in SQLite. The uptime service uses local SQLite by default and can use MongoDB when configured. The agents use MongoDB for incident state and repair memory.
 
@@ -68,4 +83,13 @@ cd message-platform && make test && make typecheck
 cd admin-dashboard && make test && make typecheck
 ```
 
-For the agent tests, run `.venv/bin/python -m pytest agents/tests -q` from the root. The app workflows are in [`.github/workflows/`](.github/workflows/) and run when their app files change.
+For the agent tests, run `.venv/bin/python -m pytest agents/tests -q` from the root. The workflows in [`.github/workflows/`](.github/workflows/) run the same checks when a component's files change.
+
+## Contributing
+
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md) to get set up, and the
+[code of conduct](CODE_OF_CONDUCT.md). Report security issues privately as described in [SECURITY.md](SECURITY.md).
+
+## License
+
+[MIT](LICENSE)
