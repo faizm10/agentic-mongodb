@@ -40,7 +40,7 @@ function rateColor(rate: number) {
 
 function StrategyList({ app, rows }: { app: string; rows: LearningStrategy[] }) {
   return (
-    <article className="rounded-xl border border-line-strong bg-raised/50 p-4">
+    <article className="card p-4">
       <h3 className="text-sm font-semibold text-ink">{APPS[app] ?? app}</h3>
       <p className="mt-0.5 text-xs text-muted">Success rate of each fix strategy the agent has tried</p>
       <ul className="mt-4 space-y-2.5">
@@ -103,7 +103,7 @@ export function LearningPanel() {
       </p>
 
       <dl className="tabular mt-5 grid grid-cols-2 gap-4 lg:grid-cols-4">
-        <div className="rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="card p-4">
           <dt className="label">First-pick accuracy</dt>
           <dd className="mt-1 text-2xl font-semibold text-ink">
             {t ? (
@@ -117,17 +117,17 @@ export function LearningPanel() {
             {t ? `before → after training, on ${t.eval_incidents ?? "unseen"} unseen incidents` : "run training to measure"}
           </dd>
         </div>
-        <div className="rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="card p-4">
           <dt className="label">Fix attempts learned from</dt>
           <dd className="mt-1 text-2xl font-semibold text-ink">{(data.totals.experiences ?? 0).toLocaleString()}</dd>
           <dd className="mt-0.5 text-[11px] text-faint">{data.totals.real_experiences ?? 0} from real incidents · rl_experiences</dd>
         </div>
-        <div className="rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="card p-4">
           <dt className="label">Training incidents</dt>
           <dd className="mt-1 text-2xl font-semibold text-ink">{data.totals.mock_incidents ?? 0}</dd>
           <dd className="mt-0.5 text-[11px] text-faint">mock_incidents · {data.totals.memories ?? 0} fixes in memory</dd>
         </div>
-        <div className="rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="card p-4">
           <dt className="label">Atlas Vector Search</dt>
           <dd className="mt-1 flex items-center gap-2 text-2xl font-semibold text-ink">
             <Search className="h-5 w-5 text-muted" />
@@ -140,7 +140,7 @@ export function LearningPanel() {
       </dl>
 
       {t && t.curve.length > 0 && (
-        <div className="mt-5 rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="mt-5 card p-4">
           <div className="flex flex-wrap items-baseline gap-2">
             <h3 className="text-sm font-semibold text-ink">Learning curve</h3>
             <span className="text-xs text-muted">incidents fixed on the first try, per 25 training incidents</span>
@@ -180,7 +180,7 @@ export function LearningPanel() {
       </div>
 
       {data.decisions.length > 0 && (
-        <div className="mt-5 rounded-xl border border-line-strong bg-raised/50 p-4">
+        <div className="mt-5 card p-4">
           <h3 className="text-sm font-semibold text-ink">Recent decisions on real incidents</h3>
           <ul className="mt-3 divide-y divide-line text-sm">
             {data.decisions.map((d) => (
