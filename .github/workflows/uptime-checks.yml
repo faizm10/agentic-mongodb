@@ -1,0 +1,21 @@
+# Runs one OpsRelay check cycle for every workspace's sites. GitHub may start a scheduled run a few
+# minutes late; the API records at most one check per site per 5-minute slot either way.
+name: uptime-checks
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions: {}
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Run checks
+        run: |
+          curl -fsS --max-time 240 -X POST \
+            -H "Authorization: Bearer ${{ secrets.OPSRELAY_CRON_SECRET }}" \
+            "${{ vars.OPSRELAY_URL || 'https://opsrelay-dashboard.vercel.app' }}/api/v1/cron/check"
