@@ -56,6 +56,7 @@ def test_orders_are_listed_newest_first(client, checkout_payload):
 def test_get_order_by_id(client, checkout_payload):
     created = client.post("/api/checkout", json=checkout_payload([(ORGANIC_TEE, 1)])).json()
     fetched = client.get(f"/api/orders/{created['order_id']}")
+    created.pop("replayed")  # describes the checkout response, not the order
     assert expect_status(fetched, 200, check="api.get_order", rule="created order must be retrievable") == created
 
 
