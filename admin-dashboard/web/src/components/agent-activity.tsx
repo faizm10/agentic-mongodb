@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useState } from "react";
 import { ArrowUpRight, Bot, Clock3, GitPullRequest } from "lucide-react";
-import type { AgentActivity } from "@/lib/api";
+import { type AgentActivity, networkError, responseError } from "@/lib/api";
 import { ago, clock, useNow } from "@/lib/format";
 
 const STAGES: Record<string, string> = {
@@ -19,27 +19,27 @@ const STATES: Record<AgentActivity["state"], { label: string; color: string; mes
   unavailable: {
     label: "Not connected",
     color: "bg-warn",
-    message: "The AI agent isn't connected, so it can't help with this one.",
+    message: "No investigation worker is connected (agent runs need MongoDB).",
   },
   waiting: {
     label: "Waiting",
     color: "bg-warn",
-    message: "The AI agent hasn't started on this yet. It usually picks it up within a minute.",
+    message: "Queued. A worker usually claims a new incident within a minute.",
   },
   working: {
     label: "Working",
     color: "bg-accent",
-    message: "The AI agent is looking into the problem and working on a fix.",
+    message: "Investigating: collecting evidence, reproducing the failure and testing a patch.",
   },
   awaiting_review: {
-    label: "Review needed",
+    label: "Awaiting PR review",
     color: "bg-accent",
-    message: "The AI agent made a fix. A person needs to review and merge it on GitHub.",
+    message: "A verified patch is waiting for review and merge on GitHub.",
   },
   needs_attention: {
-    label: "Needs attention",
+    label: "Needs an engineer",
     color: "bg-crit",
-    message: "The AI agent couldn't fix this on its own. A person needs to take a look.",
+    message: "The investigation stopped without a verified patch. Read its findings.",
   },
   finished: {
     label: "Fix merged",
@@ -74,13 +74,12 @@ function FixConfirmation({ item, onChange }: { item: AgentActivity; onChange: ()
         body: JSON.stringify({ resolved }),
       });
       if (!response.ok) {
-        const body = await response.json().catch(() => null);
-        setError(body?.error?.message ?? "Could not save your answer. Try again.");
+        setError((await responseError(response, "POST /fix-confirmation")).message);
         return;
       }
       onChange();
     } catch {
-      setError("Could not reach the uptime API.");
+      setError(networkError("POST /fix-confirmation").message);
     } finally {
       setPending(false);
     }
@@ -130,10 +129,10 @@ export function AgentActivityPanel({ activity, onChange }: { activity: AgentActi
     <section className="panel p-5 sm:p-6" aria-labelledby="agent-activity-title">
       <div className="flex flex-wrap items-center gap-2">
         <Bot className="h-4 w-4 text-accent" />
-        <h2 id="agent-activity-title" className="text-sm font-semibold">AI repair agent</h2>
+        <h2 id="agent-activity-title" className="text-sm font-semibold">Investigations</h2>
         <span className="ml-auto text-xs text-faint">Updates every 10 seconds</span>
       </div>
-      <p className="mt-1 text-xs text-muted">What the AI agent is doing about each current problem.</p>
+      <p className="mt-1 text-xs text-muted">Repair runs for current incidents.</p>
       <div className="mt-5 grid gap-4 lg:grid-cols-2">
         {activity.map((item) => {
           const state = STATES[item.state];
