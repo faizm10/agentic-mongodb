@@ -39,22 +39,42 @@ def embedding_model() -> str:
 # --------------------------------------------------------------------------- #
 def embed(text: str, input_type: str = "document") -> list[float]:
     if os.getenv("VOYAGE_API_KEY"):
-        return _voyage_embed(text, input_type)
+        return _voyage_embed([text], input_type)[0]
     return _local_embed(text)
 
 
-def _voyage_embed(text: str, input_type: str) -> list[float]:
+def _voyage_embed(texts: list[str], input_type: str) -> list[list[float]]:
+    import time
+
     import requests
 
-    resp = requests.post(
-        VOYAGE_URL,
-        headers={"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}"},
-        json={"input": [text[:MAX_LOG_CHARS * 2]], "model": VOYAGE_MODEL,
-              "input_type": input_type, "output_dimension": m.EMBEDDING_DIMS},
-        timeout=30,
-    )
+    for attempt in range(4):
+        resp = requests.post(
+            VOYAGE_URL,
+            headers={"Authorization": f"Bearer {os.environ['VOYAGE_API_KEY']}"},
+            json={"input": [t[:MAX_LOG_CHARS * 2] for t in texts], "model": VOYAGE_MODEL,
+                  "input_type": input_type, "output_dimension": m.EMBEDDING_DIMS},
+            timeout=30,
+        )
+        if resp.status_code != 429 or attempt == 3:
+            break
+        time.sleep(21)  # accounts without a payment method are limited to 3 requests a minute
     resp.raise_for_status()
-    return resp.json()["data"][0]["embedding"]
+    return [d["embedding"] for d in sorted(resp.json()["data"], key=lambda d: d["index"])]
+
+
+def reembed(coll, text_field: str, batch: int = 32) -> int:
+    """Re-embed documents stored under another model (e.g. after setting VOYAGE_API_KEY). Safe to re-run."""
+    current = embedding_model()
+    docs = list(coll.find({"embedding_model": {"$ne": current}}, {text_field: 1}))
+    for i in range(0, len(docs), batch):
+        chunk = docs[i:i + batch]
+        texts = [d.get(text_field) or "" for d in chunk]
+        vectors = (_voyage_embed(texts, "document") if os.getenv("VOYAGE_API_KEY")
+                   else [_local_embed(t) for t in texts])
+        for d, vec in zip(chunk, vectors):
+            coll.update_one({"_id": d["_id"]}, {"$set": {"embedding": vec, "embedding_model": current}})
+    return len(docs)
 
 
 def _local_embed(text: str) -> list[float]:
