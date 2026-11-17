@@ -798,7 +798,8 @@ def create_app(
                           agent_activity=[agent_activity(i, now) for i in open_incidents],
                           repositories=repository_overview(ws),
                           setup={"workspace_id": ws, "github_connected": repositories.connection(storage, ws) is not None,
-                                 "betterstack_configured": storage.get_doc("betterstack", ws) is not None}))
+                                 "betterstack_configured": storage.get_doc("betterstack", ws) is not None,
+                                 "notifications_configured": bool(storage.find_docs("notify", "workspace_id", ws))}))
 
     @app.get("/api/v1/learning", response_model=Envelope[Learning])
     def learning(ws: str = Depends(workspace)):

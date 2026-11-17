@@ -5,6 +5,7 @@ import { useState } from "react";
 import { StatusLegend, UptimeBars } from "@/components/charts";
 import { STATES } from "@/components/agent-activity";
 import { IncidentList } from "@/components/incidents";
+import { Onboarding } from "@/components/onboarding";
 import { ErrorPanel, Shell, Skeleton, StatusText, WindowTabs } from "@/components/ui";
 import { type AgentActivity, type Check, type RepoOverview, STATUS_POLL_MS, type ServiceOverview, type Summary, type Window, usePoll } from "@/lib/api";
 import { ago, clock, ms, pct, useNow } from "@/lib/format";
@@ -104,6 +105,8 @@ export default function Overview() {
             </div>
             <p className="text-xs text-muted">{data.services.length} services · checked every {data.monitoring.interval_seconds}s</p>
           </header>
+
+          <Onboarding summary={data} />
 
           <section aria-labelledby="services-title">
             <div className="mb-2 flex flex-wrap items-center justify-between gap-3">
