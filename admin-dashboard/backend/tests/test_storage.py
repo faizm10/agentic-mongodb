@@ -4,7 +4,9 @@ import asyncio
 from datetime import timedelta
 
 import mongomock
+import pytest
 
+from uptime.storage import mongo
 from uptime.storage.mongo import MongoStorage
 from uptime.storage.sqlite import SqliteStorage
 
@@ -34,6 +36,24 @@ def test_mongo_history_survives_new_storage_object():
     first.upsert_service(NOVAMART)
     second = MongoStorage(client["opsrelay"], ttl_indexes=False)  # new process, same database
     assert second.get_service("novamart").name == "NovaMart"
+
+
+@pytest.mark.parametrize(("vercel_env", "database", "allowed"), [
+    ("preview", "opsrelay", False),
+    ("preview", "opsrelay_preview", True),
+    ("production", "opsrelay_preview", False),
+    ("production", "opsrelay", True),
+])
+def test_vercel_environments_use_separate_databases(monkeypatch, vercel_env, database, allowed):
+    monkeypatch.setenv("VERCEL_ENV", vercel_env)
+    monkeypatch.setenv("MONGODB_DB", database)
+    monkeypatch.setattr(mongo, "MongoClient", lambda *args, **kwargs: mongomock.MongoClient())
+    if not allowed:
+        with pytest.raises(RuntimeError, match="preview"):
+            mongo.connect("mongodb://localhost")
+        return
+    db, _ = mongo.connect("mongodb://localhost")
+    assert db.name == database
 
 
 def test_duplicate_check_ids_are_rejected(storage, monitor_factory):

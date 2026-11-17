@@ -64,9 +64,15 @@ def connect(uri: str | None = None, db_name: str | None = None) -> tuple[Databas
         raise RuntimeError("MONGODB_URI is not set")
     if "<" in uri:
         raise RuntimeError("MONGODB_URI still contains <placeholders>")
+    name = db_name or os.environ.get("MONGODB_DB", "opsrelay")
+    vercel_env = os.environ.get("VERCEL_ENV")
+    if vercel_env == "preview" and not name.endswith("_preview"):
+        raise RuntimeError("Vercel previews require a MongoDB database ending in '_preview'")
+    if vercel_env == "production" and name.endswith("_preview"):
+        raise RuntimeError("Vercel production cannot use a preview MongoDB database")
     client = MongoClient(escape_credentials(uri), appname="opsrelay-uptime", tz_aware=True,
                          serverSelectionTimeoutMS=8000)
-    return client[db_name or os.environ.get("MONGODB_DB", "opsrelay")], uri
+    return client[name], uri
 
 
 def _doc(model, **extra) -> dict[str, Any]:
