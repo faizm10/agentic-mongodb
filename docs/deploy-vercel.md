@@ -24,8 +24,25 @@ repository secret. The repair agent worker still runs wherever you run it (`./de
 
 ## Environment (production and preview)
 
-`MONGODB_URI`, `MONGODB_DB`, `OPSRELAY_STORAGE=mongodb`, `OPENAI_API_KEY`, `OPENAI_MODEL`, `GITHUB_OWNER`,
-`GITHUB_REPO`, `OPSRELAY_CRON_SECRET` (same value as the GitHub secret) and `OPSRELAY_BLOCK_PRIVATE_URLS=1`
-(sites may not point at private or internal addresses). Previews use the same Atlas
-database. Atlas accepts connections from `0.0.0.0/0`, because Vercel functions have no fixed IPs; the
-database password is the protection, so rotate it if it leaks.
+Set `MONGODB_URI`, `MONGODB_DB`, `OPSRELAY_STORAGE=mongodb`, `OPENAI_API_KEY`, `OPENAI_MODEL`,
+`GITHUB_OWNER`, `GITHUB_REPO`, `OPSRELAY_CRON_SECRET` (the production value matches the GitHub
+secret) and `OPSRELAY_BLOCK_PRIVATE_URLS=1` (sites may not point at private or internal addresses).
+
+Use separate Atlas credentials and databases for the Vercel production and preview targets:
+
+| Vercel target | `MONGODB_DB` | Atlas credential |
+| --- | --- | --- |
+| Production | `opsrelay` (existing data) | Read/write access to `opsrelay` only |
+| Preview | `opsrelay_preview` | Read/write access to `opsrelay_preview` only |
+
+Set these as target-specific variables in Vercel, including distinct `MONGODB_URI` values. The API
+refuses to start if a preview uses a database without the `_preview` suffix or production uses a
+preview database. Existing preview data in `opsrelay` is production data; do not copy it into the
+new preview database. Seed preview with test accounts and connectors instead. Keep the agent worker
+on the production Atlas credential and `MONGODB_DB=opsrelay` so its incidents remain visible to the
+production dashboard.
+
+Enable Atlas backups for production and perform a restore into a separate test database before
+launch. Keep preview credentials out of the production worker and GitHub Actions secrets. Review
+the Atlas IP access list as part of this change; use restricted egress addresses where available
+instead of relying on a broad `0.0.0.0/0` entry.
