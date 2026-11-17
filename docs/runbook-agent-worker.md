@@ -77,6 +77,40 @@ nohup agents/.venv/bin/python -m agents.worker >> /var/log/opsrelay-agent-worker
 Without containers, the code under test can reach the network and read files the worker's user can
 read. Run the worker as its own unprivileged user, keep report-only mode, and keep tokens out of files.
 
+## Cloud Run Job (current production)
+
+Production runs `python -m agents.worker once` as a Cloud Run Job in Google Cloud project
+`opsrelay-worker-3c0bff` (`us-central1`), started every 15 minutes by Cloud Scheduler. Each run
+clones the repo into `/repo`, runs one cycle, waits for its in-flight incidents (at most
+`OPSRELAY_MAX_CONCURRENCY`, default 2) and exits; queued incidents wait for the next run. A run
+that hits the 30-minute task timeout leaves its incidents to lease expiry. `POLL_SECONDS=900`
+keeps the Atlas heartbeat alive between runs. There is no Docker, so verification uses the
+process runner: keep this job on repositories you trust and in report-only mode.
+
+- Atlas user `opsrelay_worker`: `readWrite` and `dbAdmin` on `opsrelay` only (`dbAdmin` lets
+  setup update collection validators).
+- Secrets in Secret Manager (`mongodb-uri`, `openai-api-key`, `github-token`, `voyage-api-key`),
+  readable only by the `opsrelay-worker` service account. Other settings are plain env vars on the job.
+- Sized for the Cloud Run free tier: 1 vCPU, 2 GiB, about 2,900 runs a month. A 1 CAD budget
+  alert covers the project.
+
+```bash
+P=opsrelay-worker-3c0bff; R=us-central1; TAG=$(git rev-parse --short HEAD)
+IMG=$R-docker.pkg.dev/$P/opsrelay/agent-worker:$TAG
+# Build (Cloud Build, from a clean export of the committed tree)
+rm -rf /tmp/w && mkdir -p /tmp/w && git archive HEAD agents requirements.txt | tar -x -C /tmp/w
+cat > /tmp/cloudbuild.yaml <<EOF
+steps: [{name: gcr.io/cloud-builders/docker, args: [build, -f, agents/Dockerfile, --build-arg, OPSRELAY_RELEASE=$TAG, -t, $IMG, .]}]
+images: [$IMG]
+options: {logging: CLOUD_LOGGING_ONLY}
+EOF
+gcloud builds submit /tmp/w --project $P --config /tmp/cloudbuild.yaml
+gcloud run jobs update opsrelay-worker --project $P --region $R --image $IMG   # upgrade or roll back
+gcloud run jobs execute opsrelay-worker --project $P --region $R --wait          # run now
+gcloud scheduler jobs pause opsrelay-worker-every-15m --project $P --location $R # stop scheduling
+gcloud logging read 'resource.type=cloud_run_job' --project $P --limit 50        # logs
+```
+
 ## Health
 
 - Container healthcheck: `python -m agents.worker health`. It fails when the heartbeat file is
