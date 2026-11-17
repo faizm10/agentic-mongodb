@@ -43,13 +43,16 @@ def test_mongo_history_survives_new_storage_object():
     ("preview", "opsrelay_preview", True),
     ("production", "opsrelay_preview", False),
     ("production", "opsrelay", True),
+    ("", "opsrelay", False),
+    ("", "opsrelay_dev", True),
 ])
 def test_vercel_environments_use_separate_databases(monkeypatch, vercel_env, database, allowed):
     monkeypatch.setenv("VERCEL_ENV", vercel_env)
+    monkeypatch.delenv("OPSRELAY_ENV", raising=False)
     monkeypatch.setenv("MONGODB_DB", database)
     monkeypatch.setattr(mongo, "MongoClient", lambda *args, **kwargs: mongomock.MongoClient())
     if not allowed:
-        with pytest.raises(RuntimeError, match="preview"):
+        with pytest.raises(RuntimeError, match="preview|production"):
             mongo.connect("mongodb://localhost")
         return
     db, _ = mongo.connect("mongodb://localhost")
