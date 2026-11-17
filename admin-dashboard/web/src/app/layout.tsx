@@ -10,7 +10,7 @@ const mono = Geist_Mono({ subsets: ["latin"], variable: "--font-mono", display: 
 
 export const metadata: Metadata = {
   title: "OpsRelay Status",
-  description: "Uptime and functional health of NovaMart and NovaConnect, monitored by OpsRelay.",
+  description: "Monitor service uptime, investigate incidents, and track recovery with OpsRelay.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {
