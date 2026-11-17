@@ -3,9 +3,10 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, Database, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plug, Plus, Search, Siren, XCircle } from "lucide-react";
-import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type StorageInfo, type Window, selectWorkspace } from "@/lib/api";
+import { AlertTriangle, CheckCircle2, ChevronDown, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plug, Plus, Search, Siren, XCircle } from "lucide-react";
+import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type Window, selectWorkspace } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
+import packageInfo from "../../package.json";
 
 export function StatusIcon({ status, className = "h-4 w-4" }: { status: Status; className?: string }) {
   const Icon = { operational: CheckCircle2, degraded: AlertTriangle, down: XCircle, unknown: HelpCircle }[status];
@@ -110,17 +111,6 @@ function StaleNotice({ updatedAt, error, intervalMs }: { updatedAt: number | nul
   );
 }
 
-export function StorageBadge({ storage }: { storage: StorageInfo | undefined }) {
-  if (!storage) return null;
-  const atlas = storage.atlas;
-  return (
-    <Badge tone={atlas ? "neutral" : "warn"} title={`${storage.label}: ${storage.location}`}>
-      <Database className="h-3.5 w-3.5" />
-      {atlas ? "MongoDB Atlas" : storage.backend === "mongodb" ? "MongoDB (self-hosted)" : "Local dev storage, not Atlas"}
-    </Badge>
-  );
-}
-
 export function WindowTabs({ value, onChange }: { value: Window; onChange: (w: Window) => void }) {
   const items: [Window, string][] = [["24h", "24 hours"], ["7d", "7 days"], ["30d", "30 days"]];
   return (
@@ -187,8 +177,8 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
         <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main"><NavLinks /></nav>
         <div className="space-y-3 border-t border-line p-4">
           <AccountMenu />
-          <StorageBadge storage={meta?.storage} />
           <LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} />
+          <p className="border-t border-line pt-3 text-[11px] text-faint">OpsRelay v{packageInfo.version}</p>
         </div>
       </aside>
       <header className="sticky top-0 z-30 border-b border-line bg-page/75 backdrop-blur-xl lg:hidden">
@@ -196,7 +186,7 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
           <Logo />
           <span className="ml-auto min-w-0 truncate"><LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} /></span>
         </div>
-        <div className="px-4 pb-2"><AccountMenu /></div>
+        <div className="flex items-center justify-between gap-3 px-4 pb-2"><AccountMenu /><span className="text-[11px] text-faint">v{packageInfo.version}</span></div>
         <nav className="scroll-x flex gap-1 px-3 pb-2" aria-label="Main"><NavLinks /></nav>
       </header>
       <main className="mx-auto max-w-6xl px-4 pb-20 pt-6 sm:px-8">
@@ -226,29 +216,33 @@ function AccountMenu() {
     if (res.ok) go((await res.json()).data.id);
   };
   return (
-    <div className="flex items-center gap-1.5 text-xs lg:flex-col lg:items-stretch">
-      <label className="flex min-w-0 flex-1 items-center gap-1.5">
-        <span className="sr-only">Workspace</span>
-        <select className="input min-w-0 py-1 text-xs" value={current} onChange={(e) => go(e.target.value)}>
-          {account.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-        </select>
-        <button type="button" className="btn px-2" onClick={create} aria-label="New workspace" title="New workspace">
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+    <details className="group min-w-0 text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-1 py-1.5 text-muted hover:bg-raised/60 hover:text-ink [&::-webkit-details-marker]:hidden">
+        <span className="flex h-7 w-7 flex-none items-center justify-center rounded-full border border-line-strong bg-raised font-semibold text-ink" aria-hidden="true">{account.user.email[0].toUpperCase()}</span>
+        <span className="min-w-0 flex-1 truncate" title={account.user.email}>{account.user.email}</span>
+        <ChevronDown className="h-3.5 w-3.5 flex-none transition group-open:rotate-180" aria-hidden="true" />
+      </summary>
+      <div className="mt-2 space-y-3 rounded-md border border-line bg-raised/50 p-3">
+        <label className="block">
+          <span className="label mb-1.5 block">Workspace</span>
+          <select className="input py-1.5 text-xs" value={current} onChange={(e) => go(e.target.value)}>
+            {account.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
+          </select>
+        </label>
+        <button type="button" className="flex items-center gap-1.5 text-muted hover:text-ink" onClick={create}>
+          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New workspace
         </button>
-      </label>
-      <div className="flex min-w-0 items-center gap-1.5 text-faint">
-        <span className="hidden min-w-0 flex-1 truncate lg:inline" title={account.user.email}>{account.user.email}</span>
         <button
-          type="button" className="btn px-2" aria-label="Sign out" title="Sign out"
+          type="button" className="flex items-center gap-1.5 text-muted hover:text-ink"
           onClick={async () => {
             await fetch("/api/v1/auth/sign-out", { method: "POST" }).catch(() => undefined);
             window.location.assign("/sign-in");
           }}
         >
-          <LogOut className="h-3.5 w-3.5" aria-hidden="true" />
+          <LogOut className="h-3.5 w-3.5" aria-hidden="true" /> Sign out
         </button>
       </div>
-    </div>
+    </details>
   );
 }
 
