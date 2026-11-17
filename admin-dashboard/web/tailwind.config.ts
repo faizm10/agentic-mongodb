@@ -5,15 +5,15 @@ const config: Config = {
   theme: {
     extend: {
       colors: {
-        page: "#0a0b0d",
-        surface: "#111317",
-        raised: "#16191e",
-        hover: "#1c1f25",
-        line: "#23272e",
-        "line-strong": "#2f343c",
-        ink: "#eceef2",
-        muted: "#9ba1ac",
-        faint: "#646a76",
+        page: "#0a101b",
+        surface: "#162334",
+        raised: "#1c2b3d",
+        hover: "#28394e",
+        line: "#344458",
+        "line-strong": "#52657d",
+        ink: "#eef4fc",
+        muted: "#adbbce",
+        faint: "#8798ae",
         accent: "#3987e5",
         // Status palette (dataviz reference, validated on dark): always paired with an icon + label.
         ok: "#0ca30c",

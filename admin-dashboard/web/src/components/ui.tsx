@@ -168,7 +168,7 @@ function NavLinks() {
         return (
           <Link key={href} href={href} aria-current={active ? "page" : undefined}
             className={`flex items-center gap-2.5 whitespace-nowrap rounded-md px-2.5 py-1.5 text-sm transition ${
-              active ? "bg-raised font-medium text-ink" : "text-muted hover:bg-raised/60 hover:text-ink"}`}>
+              active ? "bg-accent/15 font-medium text-ink ring-1 ring-accent/25" : "text-muted hover:bg-raised/60 hover:text-ink"}`}>
             <Icon className="h-4 w-4" aria-hidden="true" /> {label}
           </Link>
         );
@@ -182,7 +182,7 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
 }) {
   return (
     <div className="min-h-screen lg:pl-60">
-      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-line bg-surface lg:flex">
+      <aside className="fixed inset-y-0 left-0 z-30 hidden w-60 flex-col border-r border-line bg-surface/75 shadow-2xl shadow-black/20 backdrop-blur-2xl lg:flex">
         <div className="flex h-14 items-center border-b border-line px-5"><Logo /></div>
         <nav className="flex flex-1 flex-col gap-0.5 p-3" aria-label="Main"><NavLinks /></nav>
         <div className="space-y-3 border-t border-line p-4">
@@ -191,7 +191,7 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
           <LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} />
         </div>
       </aside>
-      <header className="sticky top-0 z-30 border-b border-line bg-page lg:hidden">
+      <header className="sticky top-0 z-30 border-b border-line bg-page/75 backdrop-blur-xl lg:hidden">
         <div className="flex h-12 items-center gap-3 px-4">
           <Logo />
           <span className="ml-auto min-w-0 truncate"><LiveIndicator updatedAt={updatedAt} error={Boolean(error)} intervalMs={intervalMs} /></span>
