@@ -9,6 +9,10 @@
 @layer base {
   body {
     @apply bg-page font-sans text-[14px] text-ink antialiased;
+    min-height: 100vh;
+    background-image: radial-gradient(ellipse 65% 45% at 82% -8%, rgba(57, 135, 229, 0.22), transparent 75%),
+      radial-gradient(ellipse 50% 55% at -12% 88%, rgba(45, 102, 163, 0.16), transparent 78%);
+    background-attachment: fixed;
   }
   ::selection {
     background: rgba(57, 135, 229, 0.35);
@@ -21,21 +25,26 @@
 }
 
 @layer components {
-  /* One radius scale: panels rounded-lg, controls rounded-md, badges rounded-full. Thin 1px dividers. */
   .panel {
-    @apply rounded-lg border border-line bg-surface;
+    @apply rounded-xl border border-line;
+    background: linear-gradient(145deg, rgba(35, 53, 75, 0.72), rgba(18, 30, 46, 0.78));
+    box-shadow: inset 0 1px rgba(214, 232, 255, 0.13), 0 18px 44px rgba(3, 9, 17, 0.18);
+    backdrop-filter: blur(18px) saturate(130%);
   }
   .card {
-    @apply rounded-md border border-line bg-raised/40;
+    @apply rounded-lg border border-line;
+    background: rgba(133, 176, 224, 0.055);
+    box-shadow: inset 0 1px rgba(214, 232, 255, 0.08);
+    backdrop-filter: blur(12px);
   }
   .label {
     @apply text-[11px] font-semibold uppercase tracking-[0.08em] text-faint;
   }
   .btn {
-    @apply inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-hover disabled:cursor-wait disabled:opacity-50;
+    @apply inline-flex min-h-8 items-center gap-1.5 rounded-md border border-line-strong bg-raised/80 px-3 py-1.5 text-xs font-medium text-ink transition hover:bg-hover disabled:cursor-wait disabled:opacity-50;
   }
   .input {
-    @apply w-full rounded-md border border-line-strong bg-page px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none;
+    @apply w-full rounded-md border border-line-strong bg-page/70 px-3 py-2 text-sm text-ink placeholder:text-faint focus:border-accent focus:outline-none;
   }
   .btn-primary {
     @apply border-accent bg-accent text-white hover:bg-accent/90;
@@ -60,6 +69,6 @@
   .scroll-x {
     @apply overflow-x-auto;
     scrollbar-width: thin;
-    scrollbar-color: #2f343c transparent;
+    scrollbar-color: #52657d transparent;
   }
 }
