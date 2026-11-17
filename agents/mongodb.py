@@ -29,6 +29,8 @@ from pymongo.collection import Collection
 from pymongo.database import Database
 from pymongo.errors import CollectionInvalid, OperationFailure
 
+from agents.github_types import APP_ROOTS
+
 try:  # .env support is optional
     from dotenv import load_dotenv
 
@@ -157,7 +159,7 @@ INCIDENT_SCHEMA = {
             "live": {"bsonType": "object", "required": ["uptime_incident_id"]},
             "_id": {"bsonType": "string"},
             "repo": {"bsonType": "string"},
-            "app": {"enum": ["shopping", "messaging"]},
+            "app": {"enum": sorted(APP_ROOTS)},
             "run_id": {"bsonType": ["long", "int"]},
             "run_attempt": {"bsonType": ["long", "int"], "minimum": 1},
             "commit_sha": {"bsonType": "string", "minLength": 7},
@@ -199,7 +201,7 @@ MEMORY_SCHEMA = {
         "bsonType": "object",
         "required": ["app", "summary", "embedding", "embedding_model", "created_at"],
         "properties": {
-            "app": {"enum": ["shopping", "messaging"]},
+            "app": {"enum": sorted(APP_ROOTS)},
             "summary": {"bsonType": "string"},
             "embedding": {"bsonType": "array"},
             "embedding_model": {"bsonType": "string"},
