@@ -38,10 +38,10 @@ Use separate Atlas credentials and databases for the Vercel production and previ
 
 Set these as target-specific variables in Vercel, including distinct `MONGODB_URI` values. The API
 refuses to start if a preview uses a database without the `_preview` suffix, production uses a
-preview database, or anything other than production uses `opsrelay`. Existing preview data in `opsrelay` is production data; do not copy it into the
-new preview database. Seed preview with test accounts and connectors instead. Keep the agent worker
-on the production Atlas credential and `MONGODB_DB=opsrelay` so its incidents remain visible to the
-production dashboard.
+preview database, or anything other than production uses `opsrelay`. Existing preview data in
+`opsrelay` is production data; do not copy it into the new preview database. Seed preview with test
+accounts and connectors instead. The agent worker uses its own Atlas user limited to `opsrelay` (see
+`docs/runbook-agent-worker.md`) so its incidents remain visible to the production dashboard.
 
 Enable Atlas backups for production and perform a restore into a separate test database before
 launch. Keep preview credentials out of the production worker and GitHub Actions secrets. Review

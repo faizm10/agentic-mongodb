@@ -2,6 +2,7 @@
 
     python -m agents.worker check    # validate config, Atlas, Vector Search, GitHub, verifier; exit 2 on error
     python -m agents.worker run      # supervised loop; SIGTERM drains in-flight incidents, then exits
+    python -m agents.worker once     # one cycle, for a scheduled job (Cloud Run); waits for in-flight incidents
     python -m agents.worker health   # container healthcheck: exit 1 unless the heartbeat is fresh
 
 Server-side configuration only (environment, never the repo):
@@ -334,6 +335,17 @@ class Worker:
         self._part("deployments", lambda: len(self.orch.check_deployments()))
         self._part("heartbeat", self.heartbeat)
 
+    def once(self) -> None:
+        """One cycle for a scheduled job. In-flight incidents finish before exit; the job timeout bounds
+        this, and a killed run leaves its incidents to lease expiry like any crash."""
+        log.info("worker run-once: env=%s mode=%s repo=%s fallbacks=%s", self.cfg.env, self.cfg.mode,
+                 self.cfg.repo, self.cfg.fallbacks or "none")
+        self.cycle()
+        for f in list(self.in_flight.values()):
+            f.result()
+        self._part("heartbeat", lambda: self.heartbeat("scheduled"))
+        self.pool.shutdown()
+
     def run(self) -> int:
         for sig in (signal.SIGTERM, signal.SIGINT):
             signal.signal(sig, lambda *_: self.stop.set())
@@ -370,7 +382,7 @@ def health(path: Path, max_age: int) -> int:
 
 def main() -> None:
     p = argparse.ArgumentParser(prog="python -m agents.worker")
-    p.add_argument("cmd", choices=["check", "run", "health"])
+    p.add_argument("cmd", choices=["check", "run", "once", "health"])
     a = p.parse_args()
     cfg, errors = load_config()
     if a.cmd == "health":
@@ -390,7 +402,8 @@ def main() -> None:
         return
     orch, monitor, intake, _ = build(cfg)
     orch.worker_id = worker_id
-    Worker(cfg, orch, monitor, intake).run()
+    worker = Worker(cfg, orch, monitor, intake)
+    worker.once() if a.cmd == "once" else worker.run()
 
 
 if __name__ == "__main__":
