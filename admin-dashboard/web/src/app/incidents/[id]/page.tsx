@@ -86,6 +86,7 @@ function timeline(i: Incident, walk: Walkthrough | null, demo: boolean): Entry[]
 }
 
 type FailedDeploy = { id: string; sha: string | null; deployed_at: string | null; inspector_url: string | null };
+type Diagnosis = { summary: string; likely_cause: string; suggested_fix: string; confidence: "low" | "medium" | "high"; created_at: string };
 type FailedRun = { id: number; workflow: string; sha: string | null; conclusion: string; url: string | null; at: string | null };
 type SentryIssue = { id: string; short_id: string | null; title: string; culprit: string | null; level: string; url: string | null };
 type DependabotAlert = { number: number; package: string; severity: string; summary: string; manifest: string | null;
@@ -131,6 +132,7 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
   const demo = i ? isDemoIncident(i) : false;
   const handoff = usePoll<Handoff>(i && !demo ? `/api/v1/incidents/${encodeURIComponent(id)}/evidence` : null);
   const walk = usePoll<Walkthrough>(i ? `/api/v1/incidents/${encodeURIComponent(id)}/walkthrough` : null);
+  const diagnosis = usePoll<Diagnosis | null>(i && !demo ? `/api/v1/incidents/${encodeURIComponent(id)}/diagnosis` : null);
   const now = useNow();
 
   return (
@@ -212,6 +214,16 @@ export default function IncidentPage({ params }: { params: Promise<{ id: string 
                 </dl>
               </Section>
             </div>
+
+            {diagnosis.data && (
+              <Section title="Agent diagnosis" aside={`${diagnosis.data.confidence} confidence · ${clock(diagnosis.data.created_at, true)}`}>
+                <dl className="divide-y divide-line">
+                  <Field label="What is failing">{diagnosis.data.summary}</Field>
+                  <Field label="Likely cause"><span className="whitespace-pre-line">{diagnosis.data.likely_cause}</span></Field>
+                  <Field label="Suggested fix"><span className="whitespace-pre-line">{diagnosis.data.suggested_fix}</span></Field>
+                </dl>
+              </Section>
+            )}
 
             {!demo && (
               <Section title="Investigation" aside={run ? RUN_STATUS[run.status] ?? run.status : ROUTE_LABELS[i.investigation_route].label}>

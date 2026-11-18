@@ -228,7 +228,7 @@ export type Summary = {
   setup: { workspace_id: string; github_connected: boolean; betterstack_configured: boolean; notifications_configured: boolean };
 };
 
-export type AgentMode = "report_only" | "draft_pr";
+export type AgentMode = "diagnose" | "report_only" | "draft_pr";
 export type RepoOverview = {
   service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null;
   betterstack_monitor_id: string | null; agent: { enabled: boolean; mode: AgentMode; app: string | null };

@@ -133,13 +133,15 @@ def set_agent(storage: Storage, ws: str, service_id: str, settings: dict) -> dic
     mapping = storage.get_doc("repos", f"{ws}:{service_id}")
     if mapping is None:
         raise RepoError(404, f"Unknown service '{service_id}'.")
-    if settings["enabled"]:
+    if settings["mode"] == "diagnose":  # reads logs and commits only, so any mapped repository qualifies
+        settings = {**settings, "app": None}
+    elif settings["enabled"]:
         conf = agent_config()
         if conf["worker_repo"] is None:
             raise RepoError(409, "Set GITHUB_OWNER and GITHUB_REPO so the shared worker knows its repository.")
         if mapping["repo"].lower() != conf["worker_repo"].lower():
             raise RepoError(409, f"The shared worker investigates {conf['worker_repo']} only; "
-                                 f"{mapping['repo']} needs its own worker and repair config.")
+                                 f"{mapping['repo']} needs its own worker and repair config; choose Diagnose instead.")
         if settings["app"] not in conf["apps"]:
             raise RepoError(422, f"Choose which code area the agent repairs: {', '.join(conf['apps'])}.")
     agent = {"enabled": settings["enabled"], "mode": settings["mode"], "app": settings["app"]}

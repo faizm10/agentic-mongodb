@@ -157,8 +157,8 @@ class LiveIntake:
             return handoff_from_uptime(doc)
         mapping = self.db[REPO_MAPPINGS].find_one({"_id": doc.get("service_id")}) or {}
         agent = mapping.get("agent") or {}
-        if not agent.get("enabled") or (mapping.get("repo") or "").lower() != self.repo.lower():
-            return None  # checked again next poll, so switching the agent on picks up open alerts
+        if not agent.get("enabled") or agent.get("mode") == "diagnose" or (mapping.get("repo") or "").lower() != self.repo.lower():
+            return None  # checked again next poll, so switching the agent on picks up open alerts; diagnose mode is agents/diagnose.py
         evidence = doc["evidence"]
         live = handoff_from_uptime({**doc, "app": agent["app"]})  # the code area the agent repairs, not the repo name
         return {**live, "report_only": agent.get("mode") != "draft_pr",

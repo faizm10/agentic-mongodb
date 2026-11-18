@@ -374,6 +374,9 @@ def test_repo_agent_is_off_by_default_and_only_enables_for_the_workers_repo(tmp_
     assert owner.put("/api/v1/repositories/shop/agent", json={**on, "app": "nope"}).status_code == 422
     assert owner.put("/api/v1/repositories/shop/agent", json=on).json()["data"]["agent"] == on
     assert owner.put("/api/v1/repositories/chat/agent", json={"enabled": False}).status_code == 200, "switching off always works"
+    diagnose = owner.put("/api/v1/repositories/chat/agent", json={"enabled": True, "mode": "diagnose", "app": "shopping"})
+    assert diagnose.json()["data"]["agent"] == {"enabled": True, "mode": "diagnose", "app": None}, "any repository can be diagnosed"
+    owner.put("/api/v1/repositories/chat/agent", json={"enabled": False}).raise_for_status()
     assert {r["service_id"]: r["agent"]["enabled"] for r in owner.get("/api/v1/summary").json()["data"]["repositories"]} == \
         {"shop": True, "chat": False}
 

@@ -265,6 +265,7 @@ class Worker:
         self.in_flight: dict[str, Future] = {}
         self.status: dict[str, dict] = {}
         self.started_at = m.utcnow()
+        self.llm = None  # built on first use by diagnose mode
 
     def _part(self, name: str, fn) -> None:
         """Run one part of the cycle; record its health separately from the others."""
@@ -288,6 +289,13 @@ class Worker:
             if created:
                 log.info("new CI incident", extra={"incident_id": iid, "stage": "detected"})
         return len(runs)
+
+    def _diagnose(self) -> int:
+        from agents import diagnose
+        from agents.llm import OpenAIStructuredLLM
+
+        self.llm = self.llm or OpenAIStructuredLLM()
+        return diagnose.run(self.orch.db, self.llm, redact)
 
     def _intake(self) -> int:
         new = self.intake.poll()
@@ -333,6 +341,7 @@ class Worker:
         self._part("incidents", self._dispatch)
         self._part("reviews", lambda: len(self.orch.check_reviews()))
         self._part("deployments", lambda: len(self.orch.check_deployments()))
+        self._part("diagnoses", self._diagnose)
         self._part("heartbeat", self.heartbeat)
 
     def once(self) -> None:
