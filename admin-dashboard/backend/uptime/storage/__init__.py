@@ -12,6 +12,7 @@ import os
 from pathlib import Path
 
 from .base import Storage
+from ..sealing import require_key
 from .mongo import MongoStorage, connect
 from .sqlite import SqliteStorage
 
@@ -19,6 +20,7 @@ DEFAULT_SQLITE_PATH = Path(__file__).resolve().parents[2] / "data" / "uptime-dev
 
 
 def open_storage(*, retention_days: int = 35, incident_retention_days: int = 180) -> Storage:
+    require_key()
     mode = (os.environ.get("OPSRELAY_STORAGE") or "auto").lower()
     uri = os.environ.get("MONGODB_URI", "")
     if mode == "mongodb" or (mode == "auto" and uri):

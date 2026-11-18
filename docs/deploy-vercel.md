@@ -28,6 +28,13 @@ Set `MONGODB_URI`, `MONGODB_DB`, `OPSRELAY_STORAGE=mongodb`, `OPENAI_API_KEY`, `
 `GITHUB_OWNER`, `GITHUB_REPO`, `OPSRELAY_CRON_SECRET` (the production value matches the GitHub
 secret) and `OPSRELAY_BLOCK_PRIVATE_URLS=1` (sites may not point at private or internal addresses).
 
+`OPSRELAY_SECRET_KEY` (a Fernet key, different for production and preview) encrypts connector
+credentials at rest: GitHub and Vercel tokens, the Sentry client secret and notification URLs and
+keys. The API refuses to start on Vercel without it. The production key is also stored in Google
+Secret Manager (`opsrelay-secret-key` in `opsrelay-worker-3c0bff`), because the agent worker reads
+GitHub tokens with it; losing it means every workspace reconnects its connectors. After rotating
+the key or restoring old data, run `python -m uptime seal-secrets` against that database.
+
 Use separate Atlas credentials and databases for the Vercel production and preview targets:
 
 | Vercel target | `MONGODB_DB` | Atlas credential |

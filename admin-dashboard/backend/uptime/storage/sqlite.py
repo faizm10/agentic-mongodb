@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Any
 
 from ..models import CheckRecord, Incident, Sample, ServiceConfig, ServiceState, WorkerState
+from ..sealing import seal, unseal
 from .base import WORKER_ID, iso
 
 SCHEMA = """
@@ -286,24 +287,24 @@ class SqliteStorage:
 
     # --------------------------------------------------------------- accounts
     def insert_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> bool:
-        cur = self._exec("INSERT OR IGNORE INTO account_docs(kind, id, doc) VALUES (?,?,?)", (kind, doc_id, json.dumps(doc)))
+        cur = self._exec("INSERT OR IGNORE INTO account_docs(kind, id, doc) VALUES (?,?,?)", (kind, doc_id, json.dumps(seal(kind, doc))))
         return cur.rowcount == 1
 
     def put_doc(self, kind: str, doc_id: str, doc: dict[str, Any]) -> None:
         self._exec("INSERT INTO account_docs(kind, id, doc) VALUES (?,?,?) ON CONFLICT(kind, id) DO UPDATE SET doc=excluded.doc",
-                   (kind, doc_id, json.dumps(doc)))
+                   (kind, doc_id, json.dumps(seal(kind, doc))))
 
     def get_doc(self, kind: str, doc_id: str) -> dict[str, Any] | None:
         row = self._one("SELECT doc FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))
-        return json.loads(row["doc"]) if row else None
+        return unseal(kind, json.loads(row["doc"])) if row else None
 
     def find_docs(self, kind: str, field: str, value: str) -> list[dict[str, Any]]:
         rows = self._all("SELECT doc FROM account_docs WHERE kind = ? AND json_extract(doc, ?) = ? ORDER BY id",
                          (kind, f"$.{field}", value))
-        return [json.loads(r["doc"]) for r in rows]
+        return [unseal(kind, json.loads(r["doc"])) for r in rows]
 
     def all_docs(self, kind: str) -> list[dict[str, Any]]:
-        return [json.loads(r["doc"]) for r in self._all("SELECT doc FROM account_docs WHERE kind = ? ORDER BY id", (kind,))]
+        return [unseal(kind, json.loads(r["doc"])) for r in self._all("SELECT doc FROM account_docs WHERE kind = ? ORDER BY id", (kind,))]
 
     def delete_doc(self, kind: str, doc_id: str) -> None:
         self._exec("DELETE FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))
