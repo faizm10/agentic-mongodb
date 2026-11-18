@@ -159,7 +159,7 @@ function Repositories({ repos, activity }: { repos: RepoOverview[]; activity: Ag
               </span>
               <StatusText status={r.health} label={r.health === "unknown" ? "No monitor mapped" : undefined} />
               <span className="text-xs text-muted">
-                Agent: {r.agent.enabled ? (r.agent.mode === "draft_pr" ? "on, opens draft PRs" : "on, report only") : "off"}
+                Agent: {r.agent.enabled ? { diagnose: "on, diagnoses failures", draft_pr: "on, opens draft PRs", report_only: "on, report only" }[r.agent.mode] : "off"}
               </span>
               {r.open_incident_id && (
                 <Link href={`/incidents/${encodeURIComponent(r.open_incident_id)}`} className="ml-auto text-xs text-accent hover:underline">

@@ -204,7 +204,9 @@ function MappingField({ mapping, label, saved, path, field, pattern, placeholder
 
 /** The repair agent is off until switched on, and then only reports (no PR) unless draft PRs are chosen. */
 function AgentControl({ mapping, config, onSaved }: { mapping: Mapping; config: AgentConfig; onSaved: () => void }) {
-  const [mode, setMode] = useState<AgentMode>(mapping.agent.mode);
+  // Repairs need the worker's own repository and apps.toml; any repository can be diagnosed.
+  const repairable = config.worker_repo?.toLowerCase() === mapping.repo.toLowerCase();
+  const [mode, setMode] = useState<AgentMode>(repairable || mapping.agent.enabled ? mapping.agent.mode : "diagnose");
   const [app, setApp] = useState(mapping.agent.app ?? config.apps[0] ?? "");
   const [error, setError] = useState("");
   const save = async (enabled: boolean, next: { mode?: AgentMode; app?: string } = {}) => {
@@ -224,24 +226,27 @@ function AgentControl({ mapping, config, onSaved }: { mapping: Mapping; config: 
         className={`relative h-5 w-9 flex-none rounded-full border transition ${on ? "border-accent bg-accent" : "border-line-strong bg-raised"}`}
       >
         <span className={`absolute top-0.5 h-3.5 w-3.5 rounded-full bg-white transition-all ${on ? "left-[18px]" : "left-0.5"}`} />
-        <span className="sr-only">Repair agent for {mapping.service_name}</span>
+        <span className="sr-only">Agent for {mapping.service_name}</span>
       </button>
-      <span className="text-muted">Repair agent {on ? "on" : "off"}</span>
+      <span className="text-muted">Agent {on ? "on" : "off"}</span>
       <label className="flex items-center gap-1.5">
         <span className="text-faint">Mode</span>
         <select className="input w-auto py-1 text-xs" value={mode}
           onChange={(e) => { const m = e.target.value as AgentMode; setMode(m); if (on) save(true, { mode: m }); }}>
-          <option value="report_only">Report only</option>
-          <option value="draft_pr">Open draft PRs</option>
+          <option value="diagnose">Diagnose failures</option>
+          {repairable && <option value="report_only">Repair, report only</option>}
+          {repairable && <option value="draft_pr">Repair, open draft PRs</option>}
         </select>
       </label>
-      <label className="flex items-center gap-1.5">
+      {mode === "diagnose" ? (
+        <span className="text-faint">Reads failed CI logs and recent commits (sent to OpenAI) and explains the likely cause. Never runs your code.</span>
+      ) : <label className="flex items-center gap-1.5">
         <span className="text-faint">Code area</span>
         <select className="input w-auto py-1 text-xs" value={app}
           onChange={(e) => { setApp(e.target.value); if (on) save(true, { app: e.target.value }); }}>
           {config.apps.map((a) => <option key={a} value={a}>{a}</option>)}
         </select>
-      </label>
+      </label>}
       {error && <span className="basis-full text-crit" role="alert">{error}</span>}
     </div>
   );

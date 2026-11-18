@@ -208,7 +208,7 @@ class Summary(BaseModel):
 
 class AgentSettingsIn(BaseModel):
     enabled: bool
-    mode: Literal["report_only", "draft_pr"] = "report_only"
+    mode: Literal["diagnose", "report_only", "draft_pr"] = "report_only"
     app: str | None = Field(default=None, max_length=40)
 
 
@@ -883,6 +883,12 @@ def create_app(
         incident = incident_or_404(incident_id, ws)
         service = next((s for s in services(ws) if s.id == incident.service_id), None)
         return ok(build_handoff(incident, service, clock()))
+
+    @app.get("/api/v1/incidents/{incident_id}/diagnosis", response_model=Envelope[dict[str, Any] | None])
+    def incident_diagnosis(incident_id: str, ws: str = Depends(workspace)):
+        """The agent worker's diagnosis (diagnose mode), or null until it has one."""
+        incident_or_404(incident_id, ws)
+        return ok(storage.get_doc("diagnoses", incident_id))
 
     # ---------------------------------------------------------- mutations
     @app.get("/api/v1/sites", response_model=Envelope[list[dict[str, Any]]])
