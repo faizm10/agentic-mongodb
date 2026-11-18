@@ -3,8 +3,8 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useEffect, useState } from "react";
-import { AlertTriangle, CheckCircle2, ChevronDown, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plug, Plus, Search, Siren, XCircle } from "lucide-react";
-import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type Window, selectWorkspace } from "@/lib/api";
+import { AlertTriangle, CheckCircle2, ChevronDown, GitBranch, Globe, HelpCircle, LayoutDashboard, LogOut, Plug, Search, Siren, XCircle } from "lucide-react";
+import { type Account, type ApiError, type ErrorKind, type Meta, POLL_MS, type Status, type Window } from "@/lib/api";
 import { STATUS_META, ago, clock, useNow } from "@/lib/format";
 import packageInfo from "../../package.json";
 
@@ -197,24 +197,12 @@ export function Shell({ meta, updatedAt, error, intervalMs = POLL_MS, children }
   );
 }
 
-/** Who is signed in, which workspace the dashboard shows, and sign-out. Switching reloads so no data carries over. */
 function AccountMenu() {
   const [account, setAccount] = useState<Account | null>(null);
   useEffect(() => {
     fetch("/api/v1/auth/me", { cache: "no-store" }).then((r) => (r.ok ? r.json() : null)).then((b) => b && setAccount(b.data)).catch(() => undefined);
   }, []);
   if (!account) return null;
-  const current = account.workspace_id ?? account.workspaces[0]?.id ?? "";
-  const go = (id: string) => {
-    selectWorkspace(id);
-    window.location.assign("/");
-  };
-  const create = async () => {
-    const name = window.prompt("Name the new workspace")?.trim();
-    if (!name) return;
-    const res = await fetch("/api/v1/workspaces", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ name }) });
-    if (res.ok) go((await res.json()).data.id);
-  };
   return (
     <details className="group min-w-0 text-xs">
       <summary className="flex cursor-pointer list-none items-center gap-2 rounded-md px-1 py-1.5 text-muted hover:bg-raised/60 hover:text-ink [&::-webkit-details-marker]:hidden">
@@ -222,16 +210,7 @@ function AccountMenu() {
         <span className="min-w-0 flex-1 truncate" title={account.user.email}>{account.user.email}</span>
         <ChevronDown className="h-3.5 w-3.5 flex-none transition group-open:rotate-180" aria-hidden="true" />
       </summary>
-      <div className="mt-2 space-y-3 rounded-md border border-line bg-raised/50 p-3">
-        <label className="block">
-          <span className="label mb-1.5 block">Workspace</span>
-          <select className="input py-1.5 text-xs" value={current} onChange={(e) => go(e.target.value)}>
-            {account.workspaces.map((w) => <option key={w.id} value={w.id}>{w.name}</option>)}
-          </select>
-        </label>
-        <button type="button" className="flex items-center gap-1.5 text-muted hover:text-ink" onClick={create}>
-          <Plus className="h-3.5 w-3.5" aria-hidden="true" /> New workspace
-        </button>
+      <div className="mt-2 rounded-md border border-line bg-raised/50 p-3">
         <button
           type="button" className="flex items-center gap-1.5 text-muted hover:text-ink"
           onClick={async () => {
