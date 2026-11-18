@@ -30,5 +30,5 @@ export function mascotMessage(s: Summary): MascotMessage {
   }
   const next = setupSteps(s).find((step) => !step.done);
   if (next) return { key: `${ws}:${next.key}`, tone: "accent", text: next.nudge, links: [{ href: next.href, label: next.label }] };
-  return { key: `${ws}:quiet`, tone: "ok", text: "All quiet. No open incidents in this workspace.", links: [] };
+  return { key: `${ws}:quiet`, tone: "ok", text: "All quiet. No open incidents.", links: [] };
 }

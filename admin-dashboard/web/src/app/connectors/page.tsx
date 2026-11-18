@@ -99,7 +99,7 @@ function BetterStackPanel() {
       <h2 className="text-sm font-semibold">Better Stack alerts</h2>
       {!shown.configured ? (
         <div className="flex flex-wrap items-center gap-3">
-          <p className="text-sm text-muted">Get a webhook URL for this workspace, then map each service to its Better Stack monitor on the Repositories page.</p>
+          <p className="text-sm text-muted">Get a webhook URL, then map each service to its Better Stack monitor on the Repositories page.</p>
           <button type="button" className="btn btn-primary" onClick={rotate}>Create webhook</button>
         </div>
       ) : (

@@ -22,7 +22,7 @@ export default function Sites() {
 
   return (
     <Shell meta={sites.meta} updatedAt={sites.updatedAt} error={sites.error} intervalMs={60_000}>
-      <PageHeader title="Sites" sub="The websites this workspace monitors. Each one is checked every 5 minutes." />
+      <PageHeader title="Sites" sub="The websites you monitor. Each one is checked every 5 minutes." />
       {sites.error && !sites.data ? <ErrorPanel error={sites.error} onRetry={sites.reload} />
         : !sites.data ? <Skeleton className="h-40" />
         : (
