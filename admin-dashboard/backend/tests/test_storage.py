@@ -1,6 +1,7 @@
 """Persistence, dedup, leases, retention and indexes for both storage backends."""
 
 import asyncio
+import json
 from datetime import timedelta
 
 import mongomock
@@ -133,3 +134,28 @@ def test_mongo_describe_never_leaks_credentials():
     info = storage.describe()
     assert info["atlas"] is True and info["label"] == "MongoDB Atlas"
     assert "S3cr3t" not in str(info) and "opsuser" not in str(info)
+
+
+def test_connector_credentials_are_encrypted_at_rest(storage):
+    from uptime.sealing import PREFIX, reseal_all
+    from uptime.storage.mongo import ACCOUNTS
+
+    def raw(kind, doc_id):
+        if isinstance(storage, SqliteStorage):
+            return json.loads(storage._one("SELECT doc FROM account_docs WHERE kind = ? AND id = ?", (kind, doc_id))["doc"])
+        return storage.db[ACCOUNTS + kind].find_one({"_id": doc_id})
+
+    storage.put_doc("workspaces", "w1", {"id": "w1"})
+    storage.put_doc("github", "w1", {"token": "ghp_secret", "login": "octo"})
+    assert raw("github", "w1")["token"].startswith(PREFIX) and "ghp_secret" not in str(raw("github", "w1"))
+    assert storage.get_doc("github", "w1") == {"token": "ghp_secret", "login": "octo"}
+
+    # Saved before encryption: still readable, and seal-secrets encrypts it in place.
+    if isinstance(storage, SqliteStorage):
+        storage._exec("UPDATE account_docs SET doc = ? WHERE kind = 'github' AND id = 'w1'",
+                      (json.dumps({"token": "ghp_old", "login": "octo"}),))
+    else:
+        storage.db[ACCOUNTS + "github"].replace_one({"_id": "w1"}, {"token": "ghp_old", "login": "octo"})
+    assert storage.get_doc("github", "w1")["token"] == "ghp_old"
+    assert reseal_all(storage) == 1
+    assert raw("github", "w1")["token"].startswith(PREFIX) and storage.get_doc("github", "w1")["token"] == "ghp_old"

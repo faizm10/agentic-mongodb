@@ -65,6 +65,7 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("worker")
     sub.add_parser("check")
     sub.add_parser("status")
+    sub.add_parser("seal-secrets", help="encrypt connector credentials saved before encryption")
     args = parser.parse_args(argv)
     logging.basicConfig(level=os.environ.get("OPSRELAY_LOG_LEVEL", "INFO"), format="%(asctime)s %(levelname)s %(name)s: %(message)s")
     logging.getLogger("httpx").setLevel(logging.WARNING)  # one line per probe is too noisy every 30 s
@@ -84,6 +85,11 @@ def main(argv: list[str] | None = None) -> int:
 
     settings = load_settings()
     storage = open_storage(retention_days=settings.retention_days, incident_retention_days=settings.incident_retention_days)
+    if args.cmd == "seal-secrets":
+        from .sealing import reseal_all
+
+        print(f"sealed {reseal_all(storage)} credential document(s)")
+        return 0
     if args.cmd == "check":
         monitor = _monitor(settings, storage)
         monitor.register_services()
