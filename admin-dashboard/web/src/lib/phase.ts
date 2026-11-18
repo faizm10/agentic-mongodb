@@ -52,7 +52,8 @@ export function healthAndProgress(i: Incident): { health: string; progress: stri
   const source = i.evidence.source === "betterstack" ? "Better Stack monitor"
     : i.evidence.source === "dependabot" ? "Dependencies"
     : i.evidence.source === "sentry" ? "Sentry"
-    : i.evidence.source === "vercel" ? "Production deploy" : functionalLabel(i.service_id);
+    : i.evidence.source === "vercel" ? "Production deploy"
+    : i.evidence.source === "actions" ? "CI" : functionalLabel(i.service_id);
   const health = `${source} ${STATUS_META[i.service_health].label.toLowerCase()}`;
   const left = unsettled(i);
   const progress = i.state === "resolved" ? "Incident resolved"

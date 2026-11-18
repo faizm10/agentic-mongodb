@@ -586,3 +586,38 @@ def test_failed_vercel_production_deploy_opens_an_incident_until_the_next_ready_
     latest.update(state="READY")
     assert scheduled() == {"resolved": 1}
     assert owner.get("/api/v1/repositories").json()["data"][0]["vercel"]["state"] == "READY"
+
+
+def test_failing_workflow_on_the_base_branch_opens_an_incident_until_it_passes(tmp_path, settings, clock, monkeypatch):
+    def run(run_id, workflow_id, conclusion, name="CI"):
+        return {"id": run_id, "workflow_id": workflow_id, "name": name, "head_sha": f"{run_id:07d}", "run_attempt": 1,
+                "conclusion": conclusion, "html_url": f"https://github.com/octo/shop/actions/runs/{run_id}"}
+    # Newest first: CI's latest run failed; Lint failed earlier but its latest run passed.
+    runs = [run(9, 1, "failure"), run(8, 2, "success", "Lint"), run(7, 1, "success"), run(6, 2, "failure", "Lint")]
+    seen = []
+
+    def github(request: httpx.Request) -> httpx.Response:
+        seen.append(dict(request.url.params))
+        routes = {"/user": {"login": "octo"}, "/repos/octo/shop": {"full_name": "octo/shop"},
+                  "/repos/octo/shop/branches/main": {"name": "main"}, "/repos/octo/shop/actions/runs": {"workflow_runs": runs}}
+        body = routes.get(request.url.path)
+        return httpx.Response(200, json=body) if body is not None else httpx.Response(404)
+
+    monkeypatch.setenv("OPSRELAY_CRON_SECRET", "s3cret")
+    app = create_app(make_sqlite(tmp_path), settings, clock=clock, github_transport=httpx.MockTransport(github))
+    owner = signed_in(app)
+    owner.put("/api/v1/github", json={"token": "ghp_valid_token_for_tests_000"}).raise_for_status()
+    owner.post("/api/v1/repositories", json={"repo": "octo/shop", "service_name": "Shop", "base_branch": "main",
+                                             "deployed_url": "https://shop.example"}).raise_for_status()
+
+    def scheduled():
+        return TestClient(app).post("/api/v1/cron/check", headers={"Authorization": "Bearer s3cret"}).json()["data"]
+
+    assert scheduled()["actions"] == {"created": 1}
+    assert {"branch": "main", "status": "completed"}.items() <= seen[-1].items()
+    incident = next(i for i in owner.get("/api/v1/incidents").json()["data"] if i["evidence"].get("source") == "actions")
+    assert incident["title"] == "Shop: 1 failing workflow" and [r["id"] for r in incident["evidence"]["runs"]] == [9]
+
+    runs.insert(0, run(10, 1, "success"))
+    assert scheduled()["actions"] == {"resolved": 1}
+    assert owner.get(f"/api/v1/incidents/{incident['id']}").json()["data"]["state"] == "resolved"

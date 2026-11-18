@@ -9,6 +9,7 @@ import { type AgentMode, send, usePoll } from "@/lib/api";
 type Connection = { connected: boolean; login?: string };
 type Mapping = { service_id: string; service_name: string; repo: string; base_branch: string; deployed_url: string; workflow: string | null; betterstack_monitor_id: string | null;
   dependabot?: { checked_at: string; result: string; reason?: string; open_alerts?: number } | null; sentry_project: string | null;
+  actions?: { result: string; reason?: string; failing?: number } | null;
   vercel_project: string | null; vercel?: { result: string; reason?: string; state?: string | null; sha?: string | null } | null;
   agent: { enabled: boolean; mode: AgentMode; app: string | null } };
 type AgentConfig = { worker_repo: string | null; apps: string[] };
@@ -55,7 +56,12 @@ export default function Repositories() {
                         <GitBranch className="h-3.5 w-3.5" aria-hidden="true" />{m.repo} · {m.base_branch}
                       </span>
                       <a href={m.deployed_url} className="truncate text-xs text-accent hover:underline" target="_blank" rel="noreferrer">{m.deployed_url}</a>
-                      <span className="text-xs text-faint">{m.workflow ? `Check: ${m.workflow}` : "No workflow check"}</span>
+                      <span className={`text-xs ${m.actions?.result === "skipped" ? "text-warn" : "text-faint"}`} title={m.actions?.reason}>
+                        {`Actions (${m.workflow ?? "all workflows"}): `}
+                        {!m.actions ? "not checked yet"
+                          : m.actions.result === "skipped" ? "can't read runs (token needs Actions: read)"
+                          : m.actions.failing ? `${m.actions.failing} failing` : "passing"}
+                      </span>
                       <span className={`text-xs ${m.dependabot?.result === "skipped" ? "text-warn" : "text-faint"}`} title={m.dependabot?.reason}>
                         {!m.dependabot ? "Dependabot: not checked yet"
                           : m.dependabot.result === "skipped" ? "Dependabot: can't read alerts (token needs Dependabot alerts: read)"
