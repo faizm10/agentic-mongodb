@@ -70,6 +70,9 @@ def connect(uri: str | None = None, db_name: str | None = None) -> tuple[Databas
         raise RuntimeError("Vercel previews require a MongoDB database ending in '_preview'")
     if vercel_env == "production" and name.endswith("_preview"):
         raise RuntimeError("Vercel production cannot use a preview MongoDB database")
+    # Local runs load the repo-root .env, so without this a dev server writes to production.
+    if name == "opsrelay" and "production" not in (vercel_env, os.environ.get("OPSRELAY_ENV")):
+        raise RuntimeError("Only production may use the 'opsrelay' database; set MONGODB_DB=opsrelay_dev locally")
     client = MongoClient(escape_credentials(uri), appname="opsrelay-uptime", tz_aware=True,
                          serverSelectionTimeoutMS=8000)
     return client[name], uri
