@@ -14,7 +14,7 @@ from typing import Callable
 from .models import Incident, IncidentEvent
 from .storage.base import Storage
 
-SOURCES = ("dependabot", "sentry", "vercel")
+SOURCES = ("dependabot", "sentry", "vercel", "actions")
 
 
 def key(mapping_id: str, source: str) -> str:

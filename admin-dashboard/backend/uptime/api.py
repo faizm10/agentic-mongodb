@@ -25,7 +25,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
-from . import __version__, accounts, alerts, assistant, dependabot, netguard, notify, repositories, rollup, sentry, vercel, walkthrough
+from . import __version__, accounts, actions, alerts, assistant, dependabot, netguard, notify, repositories, rollup, sentry, vercel, walkthrough
 from .config import MonitorSettings, load_settings
 from .dependencies import DependencyCheck, check_dependencies
 from .handoff import build_handoff
@@ -920,6 +920,7 @@ def create_app(
         if result is None:
             raise HTTPException(409, "A monitoring cycle is already running.")
         synced = [await dependabot.sync(storage, m, clock(), github_transport) for m in storage.all_docs("repos")]
+        workflows = [await actions.sync(storage, m, clock(), github_transport) for m in storage.all_docs("repos")]
         deploys = [await vercel.sync(storage, m, clock(), vercel_transport)
                    for m in storage.all_docs("repos") if m.get("vercel_project")]
         notified = {"sent": 0, "failed": 0}
@@ -929,6 +930,7 @@ def create_app(
         return ok({"checked": len(result["statuses"]), "recorded": len(result["recorded"]), "duplicates": result["duplicates"],
                    "dependabot": {r["result"]: sum(x["result"] == r["result"] for x in synced) for r in synced},
                    "vercel": {r["result"]: sum(x["result"] == r["result"] for x in deploys) for r in deploys},
+                   "actions": {r["result"]: sum(x["result"] == r["result"] for x in workflows) for r in workflows},
                    "notifications": notified})
 
     @app.patch("/api/v1/services/{service_id}", response_model=Envelope[PublicServiceConfig])

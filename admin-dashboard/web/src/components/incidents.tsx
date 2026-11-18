@@ -24,6 +24,7 @@ export function IncidentRow({ incident }: { incident: Incident }) {
               : incident.evidence.source === "dependabot" ? "Dependabot security alerts"
               : incident.evidence.source === "sentry" ? "Sentry issues"
               : incident.evidence.source === "vercel" ? "Vercel deploy failed"
+              : incident.evidence.source === "actions" ? "GitHub Actions failing"
               : <>{demo ? `Service ${open ? incident.severity : "recovered"}` : FAILURE_LABELS[incident.failure_type ?? ""] ?? incident.failure_type}
                 {" · "}{incident.failed_check_count} failed check{incident.failed_check_count === 1 ? "" : "s"}</>}
           </p>
